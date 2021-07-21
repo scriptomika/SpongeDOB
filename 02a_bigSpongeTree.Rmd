@@ -1,0 +1,262 @@
+---
+title: "Sponge sample tree"
+author: "Sabrina Pankey"
+date: "2/1/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide",fig.width = 8)
+
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"02_tree_results/"
+ifelse(!dir.exists(file.path(mainDir, outDir)), dir.create(file.path(mainDir, outDir)), FALSE)
+
+library(ape)
+library(phytools)
+library(ggplot2)
+library(ggtree)
+```
+
+# Sponge host phylogeny
+
+```{r setup_big_tree}
+#raxml tree rooted in FigTree and exportd as newick
+tr<-read.tree("02_input_spongetree/partitions_house.treefile")
+#root
+rootnode<-getMRCA(tr, tip=c("Nematostella","Capitella"))
+tr<-ladderize(root(tr,node=rootnode))
+#read metadata for tip labels
+metatr<-read.csv("02_input_spongetree/treemeta.csv",row.names=1,stringsAsFactors = F,header=T)
+metatr$DNAid<-rownames(metatr)
+meta16<-read.csv("01_inputs_DADA/metaDOB.csv")
+library(dplyr)
+meta_left<-left_join(metatr,data.frame(meta16),by=c("DNAid","Species_consensus"))
+
+
+#prune contaminants
+tr<-drop.tip(tr,tip=c("KY089","BZ015","CU037","BZ175","CU047","KY066","KY032","SX257"))
+
+#write.csv(cbind(tr$tip.label,1:length(tr$tip.label)),"treetips.csv")
+#capture order of tips 
+is_tip <- tr$edge[,2] <= length(tr$tip.label)
+
+ordered_tips <- tr$edge[is_tip, 2]
+DNAid<-tr$tip.label[rev(ordered_tips)]
+phyloTipOrder<-1:length(DNAid)
+spongeTreeTipOrder<-as.data.frame(cbind(DNAid,phyloTipOrder),stringsAsFactors=F)
+
+
+treemeta<-inner_join(metatr,spongeTreeTipOrder)
+treemeta<-arrange(treemeta,as.numeric(phyloTipOrder))
+x<-gsub(" ","_",treemeta$Species_consensus)
+
+accessions<-read.csv("02_input_spongetree/acctable.csv")
+gbAccs<-accessions[accessions$species %in% x,]
+write.csv(gbAccs,paste0(outDir,"AccessionsInTree.csv"))
+
+
+```
+
+Full sample-tree tips: `r Ntip(tr)`
+GenBank tips: `r nrow(gbAccs)`
+Number of WPD recognized orders: `r length(unique(treemeta$WPDOrder))`
+
+```{r plotBig_autoAnnot}
+grplist<-treemeta %>% group_by(phyloOrder) %>% group_rows()
+tips_by_clade<-lapply(grplist,FUN=function(x) treemeta$DNAid[unlist(x)])
+names(tips_by_clade)<-lapply(tips_by_clade,function(x) treemeta$phyloOrder[treemeta$DNAid==unlist(x[[1]])[1]])
+
+singleO<-names(tips_by_clade)[which(lapply(tips_by_clade,length)==1)]
+singleOtips<-lapply(tips_by_clade[singleO],function(x) which(tr$tip.label==x))
+
+mrcas<-lapply(tips_by_clade,function(x) getMRCA(tr,unlist(x)))
+mrcas<-mrcas[-1]  #drops outgroup
+cladelist<-mrcas[lengths(mrcas) != 0] #drops any items rep'ing order with single tip
+
+cladelist2<-c(cladelist,singleOtips) #combine singles-tipnumber with clade-nodes
+#order cladelist by phylo so colors will follow.
+ord.ord<-unlist(lapply(tips_by_clade[-1],function(x) as.numeric(treemeta$phyloTipOrder[treemeta$DNAid==unlist(x[[1]])[1]])))
+ord.ord<-ord.ord[order(ord.ord)] #names(ord.ord) contains all phyloOrders, in order
+cladelist2<-cladelist2[names(ord.ord)]
+
+
+#ord.ordc<-ord.ord[names(ord.ord) %in% names(cladelist)]
+#cladelist<-cladelist[names(ord.ordc)] #contains only MRCA nodes named by phyloOrder
+
+
+
+library(colorspace)
+#colsC<-c(rainbow_hcl(ceiling(length(cladelist)/2),c=50,l=30),rainbow_hcl(floor(length(cladelist)/2),c=50,l=80))
+
+cladelist<-cladelist2 #test to see if singles get colored
+colmat<-matrix(c(rainbow_hcl(ceiling(length(cladelist)/4),c=40,l=40),rainbow_hcl(ceiling(length(cladelist)/4),c=55,l=55),rainbow_hcl(ceiling(length(cladelist)/4),c=70,l=70),rainbow_hcl(ceiling(length(cladelist)/4),c=85,l=85)),byrow=T,ncol=ceiling(length(cladelist)/4))
+c(colmat)
+
+colsC<-c(colmat)[1:length(cladelist)]
+names(colsC)<-names(cladelist)
+#hcl_palettes()
+#library(scales);show_col(c(colmat))
+```
+
+```{r plotBigTree_manualannot,eval=F}
+#raxml tree rooted in FigTree and exportd as newick
+calc_clade<-MRCA(tr,tip=c("Clathrina_coriacea","Sycon_coactum"))
+homo<-MRCA(tr,tip=c("Oscarella_lobularis","Plakortis_halichondrioidesDL034"))
+osc<-MRCA(tr,tip=c("Oscarella_lobularis","Oscarella_spSN2011"))
+plak<-MRCA(tr,tip=c("Plakortis_symbiotica","Plakortis_halichondrioidesDL034"))
+hex_clade<-MRCA(tr,tip=c("Hyalonema_populiferum","Nodastrella_nodastrella" ))
+keratosa_clade<-MRCA(tr,tip=c("Igernella_notabilis","Ircinia_campana"))
+chondril<-MRCA(tr,tip=c("Halisarca_dujardini","Chondrilla_caribensis"))
+verong_clade<-MRCA(tr,tip=c("Ianthella_basta","Aplysina_cauliformis","Hexadella_racovitzai"))
+haploC<-MRCA(tr,tip=c("Amphimedon_compressa","Niphates_erecta","SX081"))
+haploE<-MRCA(tr,tip=c("Siphonodictyon_coralliphagum","BZ094"))
+haploD<-MRCA(tr,tip=c("Dasychalina_fragilis","BZ181"))
+haploA<-MRCA(tr,tip=c("KY240","BZ091"))
+haploB<-MRCA(tr,tip=c("Amphimedon_queenslandica","Xestospongia_muta"))
+spongill_clade<-MRCA(tr,tip=c("Echinospongilla_brichardi","Rezinkovia_echinata"))
+scopalinid<-MRCA(tr,tip=c("Svenzea_sp","Scopalina_ruetzleri"))
+clionaid_clade<-MRCA(tr,tip=c("Cliona_viridis","Cliona_delitrix"))
+suberitid<-MRCA(tr,tip=c("KY288","Halichondria_panicea"))
+poecilo_clade<-MRCA(tr,tip=c("Spirastrella_coccinea","Clathria_armata","Asbestopluma_obae"))
+tetract_clade<-MRCA(tr,tip=c("Geodia_neptuni","Cinachyrella_alloclada"))
+bubarid_clade<-MRCA(tr,tip=c("Desmanthus_incrustans","Dictyonella_incisa"))
+suberitid2<-MRCA(tr,tip=c("Petromica_ciocalyptoides","Topsentia_ophiraphidites"))
+biemnid_clade<-MRCA(tr,tip=c("Biemna_ehrenbergi","Neofibularia_nolitangere"))
+#axinellid polyphyletic...
+#axinell<-MRCA(tr,tip=c("Axinella_aruensis","Ectyoplasia_ferox"))
+#zoom(tr,phangorn::Descendants(tr,axinell,type="tips"),cex=0.3)
+axinell1<-MRCA(tr,tip=c("Axinella_aruensis","Myrmekioderma_gyroderma"))
+
+axinell2<-MRCA(tr,tip=c("Ectyoplasia_ferox","Stelligera_rigida"))
+agelasid_clade<-MRCA(tr,tip=c("Agelas_clathrodes","Agelas_tubulata","Ceratoporella_nicholsoni","Prosuberites_laughlini"))
+chondros<-MRCA(tr,tip=c("Chondrosia_reniformis","Chondrosia_corticata","KY276"))
+poly<-MRCA(tr,tip=c("Polymastia_boletiformis","Sphaerotylus_spBELUMMC5015"))
+
+#manually set order for the factor
+cladelist<-list(Calcarea=calc_clade, Homosclerophorida=homo, Hexactinellida=hex_clade, Keratosa= keratosa_clade, Chondrillida=chondril, Chondrosiida=chondros, Verongiida= verong_clade,  Haplosclerida_E=haploE,Haplosclerida_C=haploC,Haplosclerida_D=haploD, Haplosclerida_A=haploA,Haplosclerida_B=haploB,Spongillida=spongill_clade,Scopalinida=scopalinid,  Tetractinellida= tetract_clade,Bubarida= bubarid_clade, Axinellida1=axinell1,Suberitida2=suberitid2,  Biemnida= biemnid_clade,  Axinellida2=axinell2, Agelasida= agelasid_clade,Polymastiida=poly,Clionaida= clionaid_clade,Suberitida=suberitid,  Poecilosclerida= poecilo_clade)
+
+library(colorspace)
+#colsC<-c(rainbow_hcl(ceiling(length(cladelist)/2),c=50,l=30),rainbow_hcl(floor(length(cladelist)/2),c=50,l=80))
+
+colmat<-matrix(c(rainbow_hcl(ceiling(length(cladelist)/4),c=40,l=40),rainbow_hcl(ceiling(length(cladelist)/4),c=55,l=55),rainbow_hcl(ceiling(length(cladelist)/4),c=70,l=70),rainbow_hcl(ceiling(length(cladelist)/4),c=85,l=85)),byrow=T,ncol=ceiling(length(cladelist)/4))
+c(colmat)
+
+colsC<-c(colmat)[1:length(cladelist)]
+#hcl_palettes()
+#library(scales);show_col(c(colmat))
+```
+
+```{r plotAllSamples, fig.height=40}
+#delineate GB tips from our samples
+gbtips<-c()  #gb tips ==0, our samples ==1
+for (i in 1:length(tr$tip.label))
+{
+  gbtips[i]<-sum(startsWith(tr$tip.label[i],c("CU","BZ","KY","MG","SX","NZ","FSK","NUB","OD","CML","Nub","SB","GSK","BYH")))
+}
+graytips<-list(tr$tip.label[which(gbtips==0)],tr$tip.label[which(gbtips==1)])
+groupedTree<- groupOTU(tr,graytips)
+
+ggtree(groupedTree, aes(color=group), layout='circular') + geom_tiplab(size=1, aes(angle=angle)) + scale_color_manual(values=c("gray","black"))
+
+phyOrdertips<-lapply(unique(treemeta$phyloOrder),function(x) treemeta$DNAid[treemeta$phyloOrder ==x])
+groupedTree2<- groupOTU(tr,phyOrdertips)
+pdf(paste0(outDir,"SampleTree_orders.pdf"),height=50)
+ggtree(groupedTree2, aes(color=group)) + geom_tiplab(size=1) + scale_color_manual(values=c("black","gray",colsC))
+dev.off()
+
+# species id on tips
+tmp<-tr; for (i in 1:length(tmp$tip.label)){ 
+  if (tmp$tip.label[i] %in% rownames(metatr)) {
+    tmp$tip.label[i]<-as.character(metatr$Species_consensus)[rownames(metatr)==tr$tip.label[i]]
+  }
+}; speciestips<-tmp$tip.label
+
+# voucher id on tips
+tmp<-tr; for (i in 1:length(tmp$tip.label)){
+  if (tmp$tip.label[i] %in% rownames(metatr)) {
+    tmp$tip.label[i]<-as.character(meta_left$voucher)[rownames(metatr)==tr$tip.label[i]]
+  }
+}; vouchertips<-tmp$tip.label
+#all info on tips
+tmp<-tr; for (i in 1:length(tmp$tip.label)){
+  if (tmp$tip.label[i] %in% rownames(metatr)) {
+    tmp$tip.label[i]<-paste(c(speciestips[i],vouchertips[i],tr$tip.label[i]),collapse="_")
+  }
+}
+
+# tr2 has expanded tip labels
+tr2<-tr; tr2$tip.label<-tmp$tip.label
+#plot(tr2,cex=0.5)
+
+# plot with clade labels
+
+#p2<-ggtree(tr2) + geom_tiplab(size=1) 
+p2<-ggtree(tr) + geom_tiplab(size=1) #use orig tip labels
+
+for (i in 1:length(cladelist)){
+  p2 <- p2 + geom_hilight(cladelist[i], colsC[i],extendto=2) + geom_cladelabel(cladelist[i],label=names(cladelist)[i],align=T,offset=0.2) 
+}
+pdf(paste0(outDir,"sampletree_labeled.pdf"),height=60)
+p2  
+dev.off()
+p2<-ggtree(tr2)
+for (i in 1:length(cladelist)){
+  p2 <- p2 + geom_hilight(cladelist[i], colsC[i]) + geom_cladelabel(cladelist[i],label=names(cladelist)[i],fontsize=1)
+}
+p2
+
+p2<-ggtree(tr2,layout="circular")
+for (i in 1:length(cladelist)){
+  p2 <- p2 + geom_hilight(cladelist[i], colsC[i]) 
+   p2 <- p2 + geom_hilight(cladelist[i], colsC[i]) + geom_cladelabel(cladelist[i],label=names(cladelist)[i],fontsize=3)
+}
+p2
+ pdf(paste0(outDir,"fig1_sampletree.pdf"),height = 8,width = 8)
+p2
+dev.off()
+```
+
+#Data coverage on phylogeny
+```{r dataonTree, fig.width=10,fig.height=10}
+seqmatrix<-read.table("02_input_spongetree/seqdatamatrix.for.R.txt",row.names=1,stringsAsFactors=F,header=T)
+ trxspp<-read.table("02_input_spongetree/orthomat_tips.txt",row.names=1,stringsAsFactors=F,header=F); names(trxspp)<-c("TRXome","X1"); trxspp[trxspp=="orthomat"]<-"TRXome"
+ rownames(trxspp)[!(rownames(trxspp)  %in%  tr$tip.label)]
+ 
+ seqmatrix$ald[seqmatrix$ald=="black"]<-"ald"
+ seqmatrix$atpb[seqmatrix$atpb=="black"]<-"atpb"
+ seqmatrix$cox1[seqmatrix$cox1=="black"]<-"cox1"
+ seqmatrix$mat[seqmatrix$mat =="black"]<-"mat"
+ seqmatrix$pfk[seqmatrix$pfk =="black"]<-"pfk"
+ seqmatrix$r18S[seqmatrix$r18S =="black"]<-"r18S"
+ seqmatrix$tpi[seqmatrix$tpi =="black"]<-"tpi"
+ seqmatrix[seqmatrix =="white"]<-NA
+seqmatrix2<-merge(seqmatrix,trxspp,by=0,all=T); 
+
+library(viridis)
+ cols<-viridis_pal(option="viridis")(length(colnames(seqmatrix)))
+# library(scales);show_col(cols)
+ p<-ggtree(tr,layout="circular") 
+p<- p %<+% seqmatrix2 + geom_tippoint(aes(color=TRXome),size=2) + scale_color_manual(values=c("red"))
+ p
+  gheatmap(p,seqmatrix,width=0.5, font.size=2, colnames=F,offset=0) + 
+   scale_fill_manual(breaks= colnames(seqmatrix), na.value="white",values=c(cols),labels=colnames(seqmatrix)) 
+p2<- p + geom_tiplab(size=1,align=T, linesize=0.1,aes(angle=angle))
+p2
+  gheatmap(p2,seqmatrix,width=0.5, font.size=2, colnames=F,offset=0) + 
+   scale_fill_manual(breaks= colnames(seqmatrix), na.value="white",values=c(cols),labels=colnames(seqmatrix)) + theme(legend.position="none") 
+
+pdf(paste0(outDir,"supp_dataphylo.pdf"),height = 8,width = 8)
+p2
+ gheatmap(p2,seqmatrix,width=0.5, font.size=2, colnames=F,offset=0) + 
+   scale_fill_manual(breaks= colnames(seqmatrix), na.value="white",values=c(cols),labels=colnames(seqmatrix)) + theme(legend.position="none") 
+dev.off()
+```
+```{r saveojbects}
+#save objects needed for script 02
+save(tr,colsC,file=paste0(outDir,"treeitems.Rds"))
+
+```

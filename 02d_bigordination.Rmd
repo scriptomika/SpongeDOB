@@ -1,0 +1,497 @@
+---
+title: "Ordination of all samples"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide")
+```
+
+
+```{r load, echo=FALSE, include=FALSE} 
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"02_tree_results/"
+dir.exists(file.path(mainDir, outDir))
+library(phyloseq)
+library(RColorBrewer) 
+library(colorspace)
+library(dplyr)
+library(ggplot2)
+library(ape)
+load("01_results/psR.rds")
+meta16<-data.frame(sample_data(psR)) %>% select(DNAid,voucher,Species_consensus,species)
+  
+load(paste0(outDir,"treeitems.Rds")) #loads, tr and colsC==Order colors --tree is filtered DOBsamples tree,no refs
+  keep<-sample_names(psR)[(sample_data(psR)$DNAid %in% tr$tip.label)]
+  psR<-prune_samples(keep,psR)
+
+load("01_results/ps4.rds") #loads ps4--filtered samples, not rarefied, for subsamples for each clade
+  keep<-sample_names(ps4)[(sample_data(ps4)$DNAid %in% tr$tip.label)]
+  ps4<-prune_samples(keep,ps4)
+```
+
+##Data subsets: 
+
+ - sample tree, 
+ - species time-tree, 
+ - species character tree
+ 
+```{r summarycollection,results="markdown"}
+#number samples x site
+#numer orders/species x site
+
+load(paste0(outDir,"spongespeciesTimeTree.OGless.Rds")) #loads timetr,cladecols,cladelist,treemeta.u,colsO,colsF
+samp<-data.frame(sample_data(ps4))
+samp<-subset(samp, select=c("Species_consensus","locale","phyloOrder","site"))
+  samp<-samp[!is.na(samp$Species_consensus),]
+
+#ggtree tip order
+  timetreetips<-ggtree::get_taxa_name(ggtree::ggtree(timetr))
+  
+    #ape tip order
+  is_tip <- timetr$edge[,2] <= length(timetr$tip.label)
+    ord <- timetr$edge[is_tip, 2]; timetreetipsA<-timetr$tip.label[ord]
+samp$Species_consensus<-factor(samp$Species_consensus,levels=timetreetips[timetreetips %in% samp$Species_consensus])
+samp$phyloOrder<-factor(samp$phyloOrder,levels=names(colsC)[names(colsC) %in% samp$phyloOrder])
+spbars<-unlist(lapply(samp$phyloOrder,FUN=function(x) colsC[names(colsC)==x]))
+
+spbars1<-cbind(samp,spbars) %>% group_by(Species_consensus,spbars) %>% summarize()
+spbars2<-as.character(spbars1$spbars)
+
+#plot1: summarize to species, facet by locale, color by order, order x axis by phylo
+p1<-ggplot(samp,aes(x=Species_consensus,fill=phyloOrder)) + geom_bar() + scale_fill_manual(values=spbars) +theme(legend.position="none",axis.text.x = element_text(angle = 90,size=4,hjust=1))
+p1 + facet_wrap(~locale,scales="free")
+
+p2<-ggplot(samp,aes(x=phyloOrder,fill=Species_consensus)) + geom_bar(position = "stack", color = "black") + scale_fill_manual(values=spbars2) +theme(legend.position="none",axis.text.x = element_text(angle = 90,size=4,hjust=1))
+p2+ facet_wrap(~locale,scales="free")
+p3<-ggplot(samp,aes(x=locale,fill=phyloOrder)) + geom_bar() + scale_fill_manual(values=colsC) +theme(legend.position="none")
+p3
+p4<-ggplot(samp,aes(x=locale,fill=Species_consensus)) + geom_bar(position = "stack", color = "black") + scale_fill_manual(values=spbars2) + theme(legend.position="none") 
+p4
+
+library(colorspace)
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+
+#summarize 3 tree datasets
+barcodedn<-samp %>% group_by(Species_consensus) %>% summarize(n=n()) %>% filter(!is.na(Species_consensus))
+#read in character data
+chardat<-read.csv("02_input_spongetree/chars_by_species.csv")
+types<-chardat %>% filter(!is.na(consensusmod))
+chem<-chardat %>% filter(!is.na(LohmeanPellets))
+
+`%notin%` <- Negate(`%in%`)
+
+
+pdf(paste0(outDir,"summary_tree.pdf"),height=30, width=8)
+plot(timetr,show.tip.label=F,no.margin=T,x.lim=1000)
+
+
+for (i in types$Species_consensus){
+  if (i %in% timetr$tip.label){
+    t<-types$consensusmod[which(types$Species_consensus==i)]
+    if(t=="HMA"){
+  tiplabels(text=t,tip=which(timetr$tip.label==i),col=hma.col,cex=0.4,frame="none",offset=10)}
+     if(t=="LMA"){
+  tiplabels(text=t,tip=which(timetr$tip.label==i),col=lma.col,cex=0.4,frame="none",offset=10)}
+  }}
+for (i in chem$Species_consensus){
+  if (i %in% timetr$tip.label){
+  tiplabels(pch=5,tip=which(timetr$tip.label==i),cex=0.4,frame="none",offset=25)}
+}
+
+tiplabels(tip=which(timetr$tip.label %notin% barcodedn$Species_consensus),text=timetr$tip.label[which(timetr$tip.label %notin% barcodedn$Species_consensus)],col="gray70",cex=0.4,frame="none",adj=c(0,0.5),offset = 45)
+tiplabels(tip=which(timetr$tip.label %in% barcodedn$Species_consensus),timetr$tip.label[which(timetr$tip.label %in% barcodedn$Species_consensus)],col="black",cex=0.4,frame="none",adj=c(0,0.5),offset = 45)
+for (i in barcodedn$Species_consensus){
+  if (i %in% timetr$tip.label){
+    n<-barcodedn$n[which(barcodedn$Species_consensus==i)]
+  tiplabels(text=n,tip=which(timetr$tip.label==i),col="red",cex=0.4,frame="none",offset=35)
+  }}
+dev.off()
+sampleN<-nrow(samp)
+dobspp<-length(barcodedn$Species_consensus)
+sptips<-Ntip(timetr)
+reftipsN<-length(which(treemeta.u$Species_consensus %notin% samp$Species_consensus))
+nrow(chem)
+oc<-length(which(chem$Species_consensus %in% barcodedn$Species_consensus))
+nrow(types)
+ot<-length(which(types$Species_consensus %in% barcodedn$Species_consensus))
+```
+
+Datasets analysed: 
+samples barcoded host+micro: `r sampleN`
+barcoded samples placed into `r dobspp` species
+Number of species in species tree: `r sptips`
+Number of species tip from GenBank:`r reftipsN`
+Number of species with published HMA/LMA states: `r nrow(types)`
+Number of species with published HMA/LMA states, overlapping with DOB `r ot `.
+
+Number of species with published chemical defense data `r nrow(chem)`.
+Number of species with published chemical defense data, overlapping with DOB `r oc`.
+
+Save sample summary table
+- samples by collection site, species
+```{r saveSampTable}
+samp<-data.frame(sample_data(ps4))
+
+test<-samp  %>% group_by(Species_consensus,locale) %>% summarize(n=n()) 
+test
+#unique(samp$Species_consensus)
+#samp[is.na(samp$Species_consensus),]
+tab<-reshape2::dcast(test, Species_consensus~locale)
+tab<-tab[!is.na(tab$Species_consensus),]
+tab<-tab[!is.na(tab$Species_consensus),]
+tab[(is.na(tab))]<-0
+sum(colSums(tab[,2:5]))
+tab2<-left_join(tab,treemeta.u) %>% select(Species_consensus,BZ,CU,KY,SX,WPDOrder,phyloOrder)
+
+write.csv(tab2,file=paste0(outDir,"sample_collection_summary.csv"))
+
+```
+
+#PERMANOVA on all samples 
+Effects of sponge Order and geography on composition.
+```{r adonis, results="markdown"}
+load("01_results/psCLR.rds")
+load("01_results/DistACH.rds")
+#permanova
+library(vegan)
+samp<-as(sample_data(psCLR),"data.frame")
+if(!file.exists(paste0(outDir,"bigAdonis.rds"))){
+#ado<-adonis(otu_table(psCLR) ~ phyloOrder+locale,data=samp,permutations = 10)
+ado<-adonis(DistACH ~ phyloOrder+locale,data=samp,permutations = 1000)
+save(ado,file=paste0(outDir,"bigAdonis.rds"))
+}else{load(paste0(outDir,"bigAdonis.rds"))}
+ado
+```
+
+```{r mds,eval=F}
+#Ordination of all samples, colored by clade
+#tree with clades annotated
+if(!file.exists(paste0(outDir,"ords.Rds"))){
+ord.nmds.veg1 <- vegan::metaMDS(DistACH, distance="euclidean",k=2)
+#noconvergence
+ord.nmds.veg2 <- vegan::metaMDS(DistACH, distance="euclidean",k=3)
+#library("plot3D")
+# scatter3D(x, y, z, phi = 0, bty = "g", pch = 20, cex = 2, ticktype = "simple")
+ord.nmds.veg3 <- vegan::metaMDS(DistACH, distance="bray",k=2)
+ord.nmds.veg4 <- vegan::metaMDS(DistACH, distance="bray",k=3)
+vegan::stressplot(ord.nmds.veg3)
+
+save(ord.nmds.veg1,ord.nmds.veg2,ord.nmds.veg3,ord.nmds.veg4,file=paste0(outDir,"ords.Rds"))
+}else{load(paste0(outDir,"ords.Rds"))}
+pMDS<-plot_ordination(psClR_match, ord.nmds.veg, color="phyloOrder",shape="locale")
+pMDS
+pMDS + facet_grid(~locale)
+```
+
+### Figure1. Composition summary PCA
+```{r PCA}
+
+
+ if(!file.exists(paste0(outDir,"logrankPCA.rds"))){
+ 
+  pslog <- transform_sample_counts(ps4, function(x) log(1 + x))
+abund <- t(otu_table(pslog))
+#hist(sample_sums(ps4),breaks=1000)
+#hist(sample_sums(pslog),breaks=1000)
+qplot(colSums(otu_table(ps4)),binwidth=1000) +
+  xlab("counts-per-sample (raw)")
+qplot(log10(colSums(otu_table(ps4))),binwidth=0.01) +
+  xlab("counts-per-sample (log10)")
+abund_ranks <- t(apply(abund, 1, rank)) #taxa are col now, want to rank within samples
+ head(abund_ranks[,1:10])
+hist(abund_ranks)
+
+ 
+ library(reshape2)
+abund_df <- melt(abund, value.name = "abund") %>%
+  left_join(melt(abund_ranks, value.name = "rank"))
+colnames(abund_df) <- c("sample", "seq", "abund", "rank")
+ head(abund_df)
+
+ #visualize ranks vs abundance to determine threshold for tying ranks
+ sample_ix <- sample(1:nrow(abund_df), 20)
+ggplot(abund_df %>%
+          filter(sample %in% abund_df$sample[sample_ix])) +
+  geom_point(aes(x = abund, y = rank, col = sample),
+              position = position_jitter(width = 0.2), size = .7) +
+  labs(x = "Abundance", y = "Thresholded rank") 
+mean(abund_df$rank)
+quantile(abund_df$rank)
+#set threshold to minimize effect of rarest ASVs
+  abund_ranks <- abund_ranks - mean(abund_ranks)
+abund_ranks[abund_ranks < 1] <- 1
+hist(abund_ranks[abund_ranks>1])
+keep<-colSums(abund_ranks)!=nrow(abund_ranks)
+#filter out lowest ranking taxa
+pslog2rank<-prune_taxa(keep,pslog)
+abund_ranks2<-abund_ranks[,keep ]
+
+
+library(ade4)
+ranks_pca <- dudi.pca(t(abund_ranks2), scannf = F, nf = 3) #transpose to match example code
+#set up CCA
+ps_ccpna <- ordinate(pslog2rank, "CCA", formula = pslog2rank ~ locale + phyloOrder)
+ps_ccpnaGEO <- ordinate(pslog2rank, "CCA", formula = pslog2rank ~ locale )
+ps_ccpnaPHYLO <- ordinate(pslog2rank, "CCA", formula = pslog2rank ~ phyloOrder)
+save(abund_ranks2,pslog2rank,ranks_pca,ps_ccpna,ps_ccpnaGEO,ps_ccpnaPHYLO,ps_ccpnaPHYLO,file=paste0(outDir,"logrankPCA.rds"))
+}else{load(paste0(outDir,"logrankPCA.rds"))}
+
+row_scores <- data.frame(li = ranks_pca$li,
+                            seq = colnames(abund_ranks2))
+col_scores <- data.frame(co = ranks_pca$co,
+                            SampleID = rownames(abund_ranks2))
+
+tax <- tax_table(pslog2rank)@.Data %>%
+  data.frame(stringsAsFactors = FALSE)
+tax$seq <- rownames(tax)
+main_phyla <- c("Chloroflexi", "Proteobacteria", "Cyanobacteria",
+                   "PAUC34f","Poribacteria","Acidobacteria")
+tax$Phylum[!(tax$Phylum %in% main_phyla)] <- "Other"
+tax$Phylum <- factor(tax$Phylum, levels = c(main_phyla, "Other"))
+tax$otu_id <- seq_len(nrow(tax_table(pslog2rank)))
+row_scores <- row_scores %>% left_join(tax)
+
+samp<-data.frame(sample_data(pslog2rank))
+col_scores<-left_join(samp %>%  mutate(SampleID = rownames(samp)),col_scores, by = 'SampleID')
+ ordlev<-names(colsC)[names(colsC) %in% col_scores$phyloOrder]
+col_scores$phyloOrder<-factor(col_scores$phyloOrder,levels=ordlev)
+
+
+
+
+
+#PLOT PCA fviz(dudi) too slow?
+library(factoextra)
+fviz_eig(ranks_pca)
+
+
+#PLOT PCA ggplot(dudi)
+evals_prop <- 100 * (ranks_pca$eig / sum(ranks_pca$eig))
+pca.samp<-ggplot() +  labs(x = sprintf("Axis1 [%s%% variance]", round(evals_prop[1], 2)),  y = sprintf("Axis2 [%s%% variance]", round(evals_prop[2], 2)))+ coord_fixed(sqrt(ranks_pca$eig[2] / ranks_pca$eig[1])) +
+  geom_point(data = col_scores, aes(x = co.Comp1, y = co.Comp2,shape=locale,color=phyloOrder),size = 1, alpha = 0.8) +
+  scale_color_manual(values=colsC) +theme(panel.border = element_rect(color = "#787878", fill = alpha("white", 0))) + guides(col = guide_legend(override.aes = list(size = 3)),shape = guide_legend(override.aes = list(size = 3))) 
+pca.samp 
+pca.samp +  facet_wrap(~ locale,nrow=2) + theme(legend.position = "none")
+
+
+pca.mphy<-ggplot() +  labs(x = sprintf("Axis1 [%s%% variance]", round(evals_prop[1], 2)),  y = sprintf("Axis2 [%s%% variance]", round(evals_prop[2], 2))) + coord_fixed(sqrt(ranks_pca$eig[2] / ranks_pca$eig[1])) +  
+  geom_point(data = row_scores, aes(x = li.Axis1, y = li.Axis2, col = Phylum))
+  pca.mphy
+ 
+   pca.mphy +theme(panel.border = element_rect(color = "#787878", fill = alpha("white", 0))) + guides(col = guide_legend(override.aes = list(size = 3))) 
+
+#PLOT CCA
+library(ggrepel)
+
+plotCCAcoords<-function(psccpna){
+  ps_scores <- vegan::scores(ps_ccpna)
+sites <- data.frame(ps_scores$sites) #samples
+sites$SampleID <- rownames(sites)
+sites <-left_join(samp %>%  mutate(SampleID = rownames(samp)),sites, by = 'SampleID')
+
+ordlev<-names(colsC)[names(colsC) %in% sites$phyloOrder]
+sites$phyloOrder<-factor(sites$phyloOrder,levels=ordlev)
+sites$locale
+species <- data.frame(ps_scores$species) #ASV variable
+species <- species %>%  mutate(seq = rownames(species))
+  species<-left_join(tax %>%  mutate(seq = rownames(tax)),species ,by='seq')
+evals_prop <- 100 * ps_ccpna$CCA$eig[1:2] / sum(ps_ccpna$CA$eig)
+ccpnaplot<- ggplot()  + guides(col = guide_legend(override.aes = list(size = 3))) + coord_fixed(sqrt(ps_ccpna$CCA$eig[2] / ps_ccpna$CCA$eig[1])*0.33) +
+  labs(x = sprintf("Axis1 [%s%% variance]", round(evals_prop[1], 2)), 
+       y = sprintf("Axis2 [%s%% variance]", round(evals_prop[2], 2))) +  theme(panel.border = element_rect(color = "#787878", fill = alpha("white", 0))) +
+  geom_point(data = sites, aes(x = CCA1, y = CCA2,color=phyloOrder,shape = locale), alpha = 0.5) +  scale_color_manual(values=colsC[ordlev])  
+ccpnaplot
+ccpnaplot +  facet_wrap(~ locale,nrow=2) + theme(legend.position = "none")
+#ccpnaplot + geom_point(data = species, aes(x = CCA1, y = CCA2), size = 0.5) + geom_text_repel(data = species %>% filter(CCA2 < -2), aes(x = CCA1, y = CCA2, label = Phylum),   size = 1.5, segment.size = 0.1) 
+
+}
+cat("CCA: log-counts ~ location + host order")
+plotCCAcoords(ps_ccpna)
+cat("CCA: log-counts ~ location")
+plotCCAcoords(ps_ccpnaGEO)
+cat("CCA: log-counts ~  host order")
+plotCCAcoords(ps_ccpnaPHYLO)
+
+
+
+
+```
+
+##Bray distance network between samples
+```{r network,results="markdown"}
+set.seed(711L)
+#physeqs method excludes most samples...try igraph network with ggnet2 plotting  https://briatte.github.io/ggnet/
+library(igraph)
+library(GGally)
+net5 <- make_network(pslog2rank, max.dist=0.5)
+net75 <- make_network(pslog2rank, max.dist=0.75)
+net8 <- make_network(pslog2rank, max.dist=0.8)
+net85 <- make_network(pslog2rank, max.dist=0.85)
+net9 <- make_network(pslog2rank, max.dist=0.9)
+net95 <- make_network(pslog2rank, max.dist=0.95)
+
+samp<-data.frame(sample_data(pslog2rank))
+ordlev<-names(colsC)[names(colsC) %in% samp$phyloOrder]
+samp$phyloOrder<-factor(samp$phyloOrder,levels=ordlev)
+
+net_prep<-function(net){
+V(net)$locale <- samp[names(V(net)), "locale"]
+V(net)$locale<-levels(samp$locale)[V(net)$locale]
+V(net)$phyloOrder<- samp[names(V(net)), "phyloOrder"]
+V(net)$phyloOrder<-levels(samp$phyloOrder)[V(net)$phyloOrder]
+print(paste0("Number of samples retained: ",length(names(V(net)))," out of ",length(samp$DNAid)))
+print(ggnet2(net,color="phyloOrder",shape="locale",node.size=1,palette=colsC[ordlev]))
+}
+cat("Max distance 0.5")
+net<-net_prep(net5)
+cat("Max distance 0.75")
+net<-net_prep(net75)
+cat("Max distance 0.8")
+net<-net_prep(net8)
+cat("Max distance 0.85")
+net<-net_prep(net85)
+cat("Max distance 0.9")
+net<-net_prep(net9)
+cat("Max distance 0.95")
+net<-net_prep(net95)
+
+#pg<-ggnet2(net,color="phyloOrder",shape="locale",node.size=1,palette=colsC[ordlev]);pg
+
+```
+
+## Minimum Spanning Tree with Jaccard distance
+Testing maximum distances of 0.75 to 0.95
+```{r mst,results="markdown"}
+pdf(paste0(outDir,"fig1_mst.pdf"),height=8,width = 8)
+library(phyloseqGraphTest)
+###test first
+#ps<-psCLR
+ps<-ps4
+samp<-data.frame(sample_data(ps))
+ordlev<-names(colsC)[names(colsC) %in% samp$phyloOrder]
+samp$phyloOrder<-factor(samp$phyloOrder,levels=ordlev)
+
+ gt <- graph_perm_test(ps, "phyloOrder", 
+                      distance = "bray", type = "mst",max.dist=0.5)
+gt$sampletype<-factor(gt$sampletype,levels=levels(samp$phyloOrder))
+ordlev<-names(colsC)[names(colsC) %in% samp$phyloOrder]
+
+plotNet1=plot_test_network(gt) + theme(legend.text = element_text(size = 8),
+        legend.title = element_text(size = 9))  +  scale_color_manual(values=colsC[ordlev]) 
+pdf(paste0(outDir,"mstNEW2.pdf"),useDingbats=F)
+plotNet1
+dev.off()
+
+###
+mst_perm_test<-function(mdist){
+  gt <- graph_perm_test(ps, "phyloOrder", 
+                      distance = "jaccard", type = "mst",max.dist=mdist)
+
+gt$sampletype<-factor(gt$sampletype,levels=levels(samp$phyloOrder))
+ordlev<-names(colsC)[names(colsC) %in% samp$phyloOrder]
+
+plotNet1=plot_test_network(gt) + theme(legend.text = element_text(size = 8),
+        legend.title = element_text(size = 9))  +  scale_color_manual(values=colsC[ordlev]) 
+
+plotPerm1=plot_permutations(gt)
+print(plotNet1)
+print(gt$pval)
+print(plotPerm1)
+}
+
+
+cat("Max distance 0.5")
+mst_perm_test(mdist=0.5)
+dev.off()
+cat("Max distance 0.75")
+mst_perm_test(0.75)
+cat("Max distance 0.8")
+mst_perm_test(0.8)
+cat("Max distance 0.85")
+mst_perm_test(0.85)
+cat("Max distance 0.9")
+mst_perm_test(0.9)
+cat("Max distance 0.95")
+mst_perm_test(0.95)
+
+```
+
+
+
+##Barplot alternative to superimpose over map
+```{r maps}
+#samp add for each site lat long 
+
+
+#world <- map_data('world')
+#p <- ggplot(world, aes(long, lat)) +
+   # geom_map(map=world, aes(map_id=region), fill=NA, color="black") +
+  #  coord_quickmap()
+#library(treemapify) #update R to use
+#p4 +geom_treemap()
+spcolors <- setNames(  spbars2,spbars1$Species_consensus)
+
+library(treemap)
+
+
+samp<-data.frame(sample_data(ps4))
+ordlev<-names(colsC)[names(colsC) %in% samp$phyloOrder]
+samp$phyloOrder<-factor(samp$phyloOrder,levels=ordlev)
+
+test<-samp %>% group_by(phyloOrder) %>%
+  count(Species_consensus)
+mapcols<-colsC[names(colsC) %in% test$phyloOrder]
+
+tm1<-treemap(dtf = test,
+        index = c("phyloOrder", "Species_consensus"),
+        vSize = "n",vColor = "phyloOrder",
+        palette=mapcols,type="categorical",
+        fontsize.labels = c(10,5))
+sx<-samp[samp$locale=="SX",] %>% group_by(phyloOrder) %>% count(Species_consensus)
+sxcols<-colsC[names(colsC) %in% sx$phyloOrder]
+
+ky<-samp[samp$locale=="KY",] %>% group_by(phyloOrder) %>% count(Species_consensus)
+kycols<-colsC[names(colsC) %in% ky$phyloOrder]
+
+cu<-samp[samp$locale=="CU",] %>% group_by(phyloOrder) %>% count(Species_consensus)
+cucols<-colsC[names(colsC) %in% cu$phyloOrder]
+
+bz<-samp[samp$locale=="BZ",] %>% group_by(phyloOrder) %>% count(Species_consensus)
+bzcols<-colsC[names(colsC) %in% bz$phyloOrder]
+
+
+tmsx<-sx %>% treemap(dtf = ., index = c("phyloOrder", "Species_consensus"),
+        vSize = "n",vColor = "phyloOrder",palette=sxcols, type="categorical",
+        fontsize.labels = c(0,0),title="St Croix")
+tmky<-ky %>% treemap(dtf = ., index = c("phyloOrder", "Species_consensus"),
+        vSize = "n",vColor = "phyloOrder",palette=kycols, type="categorical",
+        fontsize.labels = c(0,0),title="Cayman")
+tmcu<-cu %>% treemap(dtf = ., index = c("phyloOrder", "Species_consensus"),
+        vSize = "n",vColor = "phyloOrder",palette=cucols, type="categorical",
+        fontsize.labels = c(0,0),title="Curacao")
+tmbz<-bz %>% treemap(dtf = ., index = c("phyloOrder", "Species_consensus"),
+        vSize = "n",vColor = "phyloOrder",palette=bzcols, type="categorical",
+        fontsize.labels = c(0,0),title="Belize")
+
+
+
+
+
+
+```
+
+
+
+

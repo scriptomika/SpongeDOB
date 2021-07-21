@@ -1,0 +1,829 @@
+---
+title: "Composistional differences between HMA, LMA sponges"
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide")
+
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"03_char_results/"
+dir.exists(file.path(mainDir, outDir))
+library(ape)
+library(phyloseq)
+library(dplyr)
+library(colorspace)
+library(viridis)
+library(vegan)
+library(ggplot2)
+library(phytools)
+#host tree
+load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #loads 'timetr', treemeta.u, cladelist&cladecols (==phylo clade colors),colsO & colsF (==WPD taxonomy colors)
+
+
+#original counts by sponge species
+load("01_results/psRm_bySpecies.rds") 
+psRm.t<-prune_samples(c(sample_names(psRm)[sample_names(psRm) %in% timetr$tip.label],"sediment","seawater"),psRm)
+
+
+load(paste0(outDir,"psRm.phylum.Rds")) #phylumGlommed, relabund.phy
+load(paste0(outDir,"psRm.class.Rds")) #classGlommed, relabund.class
+
+#todo look into creating this object earlier
+#load("ps.hostspecies.ra.RDS") #sw-adjusted counts, relative abundance per host species
+
+ #load host states predicted by RF
+load(paste0(outDir,"species_charsRF.Rds")) #use char$consensusRF_phyla
+char$RFtrainer<-!is.na(char$consensusmod)
+
+# need to load in HMA/LMA microbe predictions...
+load(paste0(outDir,"mostImp.Rds"))
+imps<-rbind(imp.phy,imp.cl)
+
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+
+```
+
+#PERMANOVA
+Testing whether HMA/LMA state impacts composition (it should since was used to train RF predictions!), even after correcting for sponge phylogeny.
+First, standard PERMANOVA on species-merged data (no phylogeny):
+```{r permanovaHMALMA, results="markdown"}
+
+#test whether HMA/LMA status affects composition
+  #match character data species and tree species, then match count data
+spkeep<-intersect(timetr$tip.label,sample_names(psRm))
+  tmp<-subset(data.frame(sample_data(psRm)),select=c(Species_consensus,phyloOrder,locale))
+char1<-left_join(char,tmp)
+keepStates<-char1[char1$Species_consensus %in% spkeep,c("Species_consensus","consensusRF_class","phyloOrder","locale")]
+
+tr<-drop.tip(timetr,timetr$tip.label[!(timetr$tip.label %in% spkeep)])
+
+# counts --non glommed
+  #match ps and tree species
+  psRm1<-prune_taxa(taxa_sums(psRm)>50,psRm) #select 50 based on hist()
+  psRm1<-prune_samples(sample_names(psRm1) %in% spkeep,psRm1)
+  psRm.clr<-microbiome::transform(psRm1, transform = "clr", target = "OTU", shift = 0, scale = 1)
+
+keepStates<-keepStates[match(sample_names(psRm.clr),keepStates$Species_consensus),]; 
+trait<-as.factor(keepStates$consensusRF_class)
+names(trait)<-keepStates$Species_consensus
+  
+dist<-phyloseq::distance(psRm.clr,method="euclidean")
+perm<- vegan::adonis(dist ~ consensusRF_class + phyloOrder,data=keepStates,permutations = 9999,method = "bray")
+perm
+permRF<- vegan::adonis(dist ~ consensusRF_class,data=keepStates,permutations = 9999,method = "bray")
+permRF
+
+ps<-prune_taxa(tax_table(phylumGlommed)[,"KP"] %in% imp.phy$bacterial_group,phylumGlommed) #select 50 based on hist()
+ps<-prune_samples(sample_names(ps) %in% timetr$tip.label,ps)
+ps.clr.phy<-microbiome::transform(ps, transform = "clr", target = "OTU", shift = 0, scale = 1)
+dist<-phyloseq::distance(ps.clr.phy,method="euclidean")
+
+perm.phyG<- vegan::adonis(dist ~ consensusRF_class + phyloOrder,data=keepStates,permutations = 9999,method = "bray")
+perm.phyG
+
+
+
+
+```
+
+Standard PERMANOVA on *samples* shows HMA/LMA status impacts composition signficantly: contributing to `r 100*perm$aov.tab$R2[1]`% of ASV variation and `r 100*perm.phyG$aov.tab$R2[1]`% of phyletic variation. These tests also indictated that host relationships factor in, and that host Order membership plays a bigger role in explaining ASV variation (`r 100*perm$aov.tab$R2[2]`%) than variation in overall phyletic abundance (`r 100*perm.phyG$aov.tab$R2[2]`%).
+
+
+```{r permanovaHMALMA_origsamples, results="markdown",include=T}
+load("01_results/psCLR.rds")
+#test whether HMA/LMA status affects composition
+  #match character data species and tree species, then match count data
+
+spkeep<-intersect(timetr$tip.label,sample_data(psCLR)$Species_consensus)
+tr<-drop.tip(timetr,timetr$tip.label[!(timetr$tip.label %in% spkeep)])
+psCLR2<-prune_samples(sample_data(psCLR)$Species_consensus %in% spkeep,psCLR)
+keepdat<-left_join(subset(data.frame(sample_data(psCLR2)),select=c(Species_consensus,phyloOrder,locale)),char) %>% select(Species_consensus,consensusRF_class,phyloOrder,locale) %>% filter(Species_consensus %in% spkeep)
+
+#keepStates<-keepStates[match(sample_data(psCLR2)$Species_consensus,keepStates$Species_consensus),]; 
+rownames(keepdat)<-sample_names(psCLR2)
+sample_data(psCLR2)<-keepdat
+
+  dist<-phyloseq::distance(psCLR2,method="euclidean")
+  perm1<- vegan::adonis(dist ~ phyloOrder+locale,data=keepdat,permutations = 1000,method = "bray")
+perm1
+#knitr::kable(perm1$aov.tab)
+  perm2<- vegan::adonis(dist ~ consensusRF_class + phyloOrder+locale,data=keepdat,permutations = 1000,method = "bray")
+  perm2
+  
+   permRF<- vegan::adonis(dist ~ consensusRF_class ,data=keepdat,permutations = 1000,method = "bray")
+  permRF
+#knitr::kable(perm2$aov.tab)
+
+  # Homogeneity of dispersion test
+beta <- betadisper(dist, keepdat$consensusRF_class)
+bperm<-permutest(beta)
+bperm
+TukeyHSD(beta)
+
+anosim(dist,keepdat$consensusRF_class)
+```
+
+
+
+```{r perm2,results="markdown"}
+#do HMA and LMA separate to see which more affected by geography
+
+Hps<-prune_samples(sample_data(psCLR2)$consensusRF_class=="HMA",psCLR2)
+Hdat<-keepdat[keepdat$consensusRF_class=="HMA",]
+  disth<-phyloseq::distance(Hps,method="euclidean")
+
+permH<- vegan::adonis(disth ~ phyloOrder+locale,data=Hdat,permutations = 1000,method = "bray")
+permH
+#knitr::kable(permH$aov.tab)
+
+ Lps<-prune_samples(sample_data(psCLR2)$consensusRF_class=="LMA",psCLR2)
+Ldat<-keepdat[keepdat$consensusRF_class=="LMA",]
+  distL<-phyloseq::distance(Lps,method="euclidean")
+
+permL<- vegan::adonis(distL ~ phyloOrder+locale,data=Ldat,permutations = 1000,method = "bray")
+permL
+#knitr::kable(permL$aov.tab) #knitr prints table of results to HTML output
+ unloadNamespace("microbiome"); unloadNamespace("phyloseq")
+```
+
+
+```{r phyloPCA}
+library(geiger)
+
+# to ttest
+#formula<-df~trait ;phy<-tr; nsim<-50 ; nperm<-100; test<-"Wilks"
+aov.phyloMSP3<-function (formula, phy, nsim = 1000, nperm=100, test = c("Wilks", "Pillai", "Hotelling-Lawley", "Roy"),...) {
+    xx = lapply(all.vars(formula), get)
+    flag = "'formula' must be of the form 'dat~group', where 'group' is a named factor vector and 'dat' is a data matrix or named vector"
+    if (!is.factor(xx[[2]])) 
+        stop(flag)
+    if (is.null(names(xx[[2]]))) 
+        stop(flag)
+    yy = merge(xx[[1]], xx[[2]], by = 0)
+    if (nrow(yy) == 0) 
+        stop(flag)
+    rownames(yy) = yy[, 1]
+    yy = yy[, -1]
+    tmp <- treedata(phy, yy, sort = TRUE)
+    phy = tmp$phy
+    yy = yy[phy$tip.label, ]
+    group = structure(yy[, ncol(yy)], names = rownames(yy))
+    dat = as.matrix(yy[, -ncol(yy)])
+    rownames(dat) = rownames(yy)
+    s <- ratematrix(phy, dat)
+    multivar = ifelse(ncol(dat) > 1, TRUE, FALSE)
+    if (multivar) {
+        #test = match.arg(test, c("Wilks", "Pillai", "Hotelling-Lawley", "Roy"))
+       # m = summary.manova(mod <- manova(dat ~ group), test = test)
+        #f.data = m[[4]][1, 2]
+    
+         a = adonis(dat ~ group, permutations = nperm,method="euclidean")
+          f.data<- a$aov.tab[6][[1]][1]
+       print("ok")
+          # FUN = function(xx) summary.manova(manova(as.matrix(xx) ~ group), test = test)[[4]][1, 2]
+       permFUN = function(xx,gp)  adonis(as.matrix(xx) ~ gp, permutations = nperm,method="euclidean")$aov.tab[6][[1]][1]
+        sims <- sim.char(phy, s, nsim = nsim)
+        f.null <- apply(sims, 3, function(x) permFUN(x,group))
+        out = as.data.frame(a$aov.tab)
+        attr(out, "heading") = c("Multivariate Analysis of Variance Table\n", 
+            "Response: dat")
+    } else {
+      print("not multivar")
+        test = NULL
+        m = anova(mod <- lm(dat ~ group))
+        f.data <- m[1, 4]
+        FUN = function(xx) anova(lm(xx ~ group))[1, 4]
+        out = as.data.frame(m)
+         sims <- sim.char(phy, s, nsim = nsim)
+    f.null <- apply(sims, 3, FUN)
+    }
+    colnames(out) = gsub(" ", "-", colnames(out))
+   
+    if (multivar) {
+        if (test == "Wilks") {
+            p.phylo = (sum(f.null < f.data) + 1)/(nsim + 1)
+        } else {
+            p.phylo = (sum(f.null > f.data) + 1)/(nsim + 1)
+        }
+    } else {
+        p.phylo = (sum(f.null > f.data) + 1)/(nsim + 1)
+    }
+    out$"Pr(>F) given phy" = c(p.phylo, NA,NA)
+    class(out) <- c("anova", "data.frame")
+    print(out)
+   # attr(mod, "summary") = out
+   # return(mod)
+}
+df<-data.frame(phyloseq::otu_table(ps.clr.phy)); colnames(df)<-phyloseq::tax_table(ps)[,"KP"]
+x.phy<-aov.phyloMSP3(df~trait, phy=tr, nsim=50, nperm=100,test="Wilks")
+#print in next chunk...
+
+```
+
+Phylogenetic-adjusted PERMANOVA test for HMA/LMA state on **phyletic** composition vs **ASV** composition (top and bottom):
+```{r pPermASV,include=T,results="markdown"} 
+
+knitr::kable(x.phy) #print results from above
+#run separately...slow
+if(!file.exists("pPermanovaASV.Rds")){
+  clrdf<-as.data.frame(phyloseq::otu_table(psRm.clr))
+
+  #tmp<-clrdf[,1:100]
+    s<-Sys.time()
+  x<-aov.phyloMSP3(formula=clrdf~trait, phy=tr, nsim=50, nperm=100,test="Wilks")
+  e<-Sys.time(); print(paste0("phylo-permanova took:",e-s)) #16min
+#x=aov.phylo(clrdf~trait, tr, nsim=50, test="Wilks")
+save(x,file=paste(outDir,"pPermanovaASV.Rds"))
+} else{load(paste0(outDir,"pPermanovaASV.Rds"))}
+knitr::kable(x) # summary table
+
+```
+
+
+##Compositional trends among microbial phyla with strong predictive value for HMA/LMA classification
+
+```{r pca_RFimpGroups,include=T}
+
+library("factoextra");library("FactoMineR")
+res.pca<-PCA(df,graph = F)
+fviz_cos2(res.pca, choice = "var", axes = 1:2)
+fviz_pca_var(res.pca, col.var = "cos2", labelsize=2,gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),   repel = T,title="Correlation circle: Variables by their cos2" )
+var <- get_pca_var(res.pca)
+#head(var$cos2, 4)
+
+# Contributions of variables to PC1
+fviz_contrib(res.pca, choice = "var", axes = 1, top = 10)
+# Contributions of variables to PC2
+fviz_contrib(res.pca, choice = "var", axes = 2, top = 10)
+
+
+tmp<-imp.phy[match(rownames(res.pca$var$coord),imp.phy$bacterial_group),]
+grpB <- factor(tmp$enrichedIn,levels=c("HMA","LMA")); names(grpB)<-rownames(tmp)
+# Color variables by groups
+pdf(paste0(outDir,"fig2_variablesPCA.pdf"),useDingbats = F)
+fviz_pca_var(res.pca, col.var = grpB, labelsize = 2,
+             palette = c(hma.col,lma.col),
+             legend.title = "Phyla enriched in",
+             title="Correlation circle: Variables by HMA/LMA")
+
+grp<-trait[match(rownames(res.pca$ind$coord),names(trait))]
+fviz_pca_ind(res.pca, col.ind = grp, labelsize = 1,
+             palette = c(hma.col,lma.col),ellipse.border.remove =T,
+             repel = TRUE ,addEllipses = T,invisible = "quali",
+             legend.title="Phyla enriched in",title="PCA of species")
+
+pca_plot1<-fviz_pca_biplot(res.pca,col.ind = grp,col.var=grpB,palette = c(hma.col,lma.col),addEllipses = T,alpha.ind=0.5,labelsize=2,legend.title="Microbial Abundance",title="PCA of species",invisible = "quali")
+dev.off()
+```
+
+Correlation circles: The correlation between a variable and a principal component (PC) is used as the coordinates of the variable on the PC. The representation of variables differs from the plot of the observations: The observations are represented by their projections, but the variables are represented by their correlations (Abdi and Williams 2010).
+
+Cos2 values: The cos2 values are used to estimate the quality of the representation
+
+- A high cos2 indicates a good representation of the variable on the principal component. In this case the variable is positioned close to the circumference of the correlation circle. 
+- The closer a variable is to the circle of correlations, the better its representation on the factor map (and the more important it is to interpret these components)
+- Variables that are closed to the center of the plot are less important for the first components.
+
+#####Takeaway: 
+strong correlation within HMA and LMA-predictive phyla. HMA and LMA communitites are largely dissimilar. Phylogenetic PERMANOVA also supports that LMA and HMA communities are compositionally distict, even after adjusting for phylogenetic non-independence (R2=`r x.phy[5][[1]][1]`, F=`r x.phy[4][[1]][1]`, p=`r x.phy[6][[1]][1]`)
+
+##Phylogenetic PCA
+Ordination of CLR-transformed counts of species' means with consideration of species phylogeny.
+```{r pcca, include=T}
+#phylo corrected PCA
+#reciprocally pruned tree and count table 
+
+ppca<-phyl.pca(tr,df)
+
+
+ppca.sum<-summary(ppca)
+par(mar=c(4,4,2,1))
+#plot(ppca)
+indscores<-ppca[[3]] #scores
+loads<-ppca[[4]] #variable loadings
+#biplot(indscores,loads,cex=0.3,main="Phylo-corrected PCA")
+
+
+#estimate proportion of variance contained in PCs, compare with phyl.pca eigenvectors 
+PoV<-res.pca$eig[,2]/100
+pPoV <-ppca.sum$importance[2,]
+
+plot(1:10,PoV[1:10],xlim=c(1,10),ylim=c(0,1),xlab="Components",ylab="Proportion of variance explained", pch=16,main="PCA Scree")
+points(1:10,pPoV[1:10],col="gray",pch=16)
+legend("topright",legend=c("PCA","phylogenetic PCA"),text.col=c("black","gray"),bty="n")
+
+# Color variables by groups
+res.ppca<-res.pca #copy object, replace coords and loadings with phylo-corrected values
+res.ppca$var$coord<-loads
+res.ppca$ind$coord<-indscores
+
+
+pca_plot2<-fviz_pca_biplot(res.ppca,col.ind = grp,col.var=grpB,palette = c(hma.col,lma.col),addEllipses = T,alpha.ind=0.5,labelsize=2,legend.title="Microbial Abundance",title="PhyloPCA of species", invisible="quali",repel=T)
+
+fviz_pca_var(res.ppca, col.var = grpB, labelsize = 2,
+             palette = c(hma.col,lma.col),
+             legend.title = "Phyla enriched in",
+             title="Correlation circle: Variables by HMA/LMA")
+
+fviz_pca_ind(res.ppca, col.ind = grp, labelsize = 1,
+             palette = c(hma.col,lma.col),ellipse.border.remove = T,
+             repel = TRUE ,addEllipses = T,ellipse.level=0.95, invisible="quali",
+             legend.title="Phyla enriched in",title="PCA of species")
+
+```
+Factoring in phylogeny slightly reduces the amount of compositional variance  captured in the first PC dimensions (`r pPoV[1]` vs `r PoV[1]`). Qualitatively, not a dramatic effect on compositional variance. As seen in PERMANOVA, even after controlling for phylogeny, HMA and LMA states are signficantly distinct.
+
+
+###Bubbleplots of microbial abundances
+Top RF-predictive phyla across sponge species
+```{r bubbleTopPredictors_phy,include=T}
+#plot microbial phyletic relative abundance to compare between lma and hma
+#use imported relabund.class
+library(phyloseq)
+x<-relabund.phy;sample_sums(x) #should all be 1
+hmalma_state<-char$consensusRF_phyla
+names(hmalma_state)<-char$Species_consensus
+trspp<-treemeta.u$Species_consensus[treemeta.u$Species_consensus %in% names(hmalma_state)]
+ hmalma_state<-hmalma_state[match(trspp,names(hmalma_state))] #species phylo-ordered
+
+missing<-sample_names(x)[!(sample_names(x) %in% names(hmalma_state))]
+  #todo optional classify sediment seawater and Sycon (low count)
+ #until then, prune out samples missing state clssificatons
+pstmp<-prune_samples(sample_names(x)[!(sample_names(x) %in% missing)],x)
+hmalma_state<-hmalma_state[sample_names(pstmp)] #make sure vector in same species order
+sample_data(pstmp)[,"hmalmaRF"]<- hmalma_state
+
+#p2<-plot_bar(pstmp, x="Species_consensus", fill="hmalmaRF") + facet_grid(~Kingdom+hmalmaRF) + coord_flip()
+
+
+  library(reshape)
+ dat<-data.frame(otu_table(pstmp));  colnames(dat)<-tax_table(pstmp)[,"KP"] ; 
+ dat<-dat[,colSums(dat)>0.01]
+  dat$sponge<-rownames(dat); 
+ trspp<-treemeta.u$Species_consensus[treemeta.u$Species_consensus %in% dat$sponge]
+ dat<-dat[match(trspp,dat$sponge),] #species phylo-ordered
+
+dat<-cbind(dat,hmalma_state)
+
+ melt3<-reshape2::melt(dat); 
+ 
+ colnames(melt3)<-c("sponge","states","phylum","abund")
+melt3$states<-factor(melt3$states)
+melt3$phylum<-factor(melt3$phylum)
+melt3$sponge<-factor(melt3$sponge,levels=trspp)
+p2<-ggplot(data=melt3, aes(x=sponge,y=abund,fill=states)) +
+  geom_bar(stat="identity") + 
+  coord_flip() + facet_grid(phylum~states)
+#p2
+pdf(file=paste0(outDir,"test.pdf"),height=80,width=8)
+p2
+dev.off()
+
+#todo need to identify exclusively (or strongly enriched in either ~10x+ relabund) hma-lma phyla and which are least exclusive (found in both types)
+
+
+# calc avg relative abund of each phylum in HMA, LMA: relabund.p.hmalma
+#relabund.p.hl<-dat %>% select(-sponge) %>% group_by(hmalma_state) %>% summarise(across(everything(), list(mean)))
+#dat.phy<-as.data.frame(t(relabund.p.hl[,-1]));colnames(dat.phy)<-as.character(relabund.p.hl$hmalma_state)
+#rownames(dat.phy)<-unlist(lapply(rownames(dat.phy), function(x) strsplit(x,"_1")[[1]]))
+
+# phyImportance$importance and clImportance$importance provide scores according to ASV taxon (representative for phylum/class)
+
+dat.phy <- imp.phy %>% select(bacterial_group,HMAra,LMAra)
+melt3<-reshape2::melt(dat.phy); colnames(melt3)<-c("phylum","states","abund")
+melt3$states<-factor(melt3$states)
+melt3$phylum<-factor(melt3$phylum,levels=imp.phy$bacterial_group)
+
+#bubbleplot
+ p1 <- ggplot(melt3, aes(x = states, y = phylum)) +
+      geom_point(aes(size = abund,color=states), shape = 19, alpha = 0.9) +
+      scale_size_continuous(name = "relative abundance ", range=c(0, 10)) +
+      theme_bw() +
+      #theme(axis.text.x = element_text(angle = 90)) +		# , hjust = 1
+      labs(x=NULL, y=NULL) + theme(axis.text.x = element_blank(), legend.position="none") + ggtitle("Average relative abundances of RF-influential microbial phyla,\n ordered by RF classification importance")
+    
+p1
+
+#todo barplot instead? highlight exclusive groups
+#todo barplots: split into HMA and LMA 
+#todo compare with sw-adjusted
+```
+
+
+
+Top RF-predictive classes across sponge species
+
+```{r , include=T}
+
+ dat.cl <- imp.cl %>% select(bacterial_group,HMAra,LMAra)
+melt3<-reshape2::melt(dat.cl); colnames(melt3)<-c("class","states","abund")
+melt3$states<-factor(melt3$states)
+melt3$class<-factor(melt3$class,levels=imp.cl$bacterial_group)
+
+
+#bubbleplot
+ p1 <- ggplot(melt3, aes(x = states, y = class)) +
+      geom_point(aes(size = abund,color=states), shape = 19, alpha = 0.9) +
+      scale_size_continuous(name = "relative abundance ", range=c(0, 10)) +
+      theme_bw() +
+      #theme(axis.text.x = element_text(angle = 90)) +		# , hjust = 1
+      labs(x=NULL, y=NULL) + theme(axis.text.x = element_blank(), legend.position="none") + ggtitle("Average relative abundances of RF-influential microbial classes,\n ordered by RF classification importance")
+    
+p1
+
+
+#todo barplot instead?
+```
+
+
+
+# Microbial community MDS, by sponge taxomonic group (WPD Order) and by HMA-LMA
+```{r plotMA, fig.height=8,include=T}
+library(cowplot)
+library(ggrepel)
+ord.nmds.bray <- phyloseq::ordinate(psRm.t, method="NMDS", distance="bray",k=10)
+pMDS<-plot_ordination(psRm.t, ord.nmds.bray, color="Species_consensus") +ggtitle("ASV ordination")
+ mdsdat <-pMDS$data %>% dplyr::select(NMDS1,NMDS2,Species_consensus)
+tmp<-left_join(mdsdat, treemeta.u[,c("Species_consensus","WPDOrder","WPDFamily","phyloOrder","phyloFamily")],by =c("Species_consensus"))
+mds_dat<-left_join(tmp, char, by =c("Species_consensus"))
+mds_dat$WPDOrder<-factor(mds_dat$WPDOrder,levels=c(names(colsO),"seawater","sediment"))
+
+mds_dat$WPDOrder[mds_dat$Species_consensus=="seawater"]<-"seawater"
+mds_dat$WPDOrder[mds_dat$Species_consensus=="sediment"]<-"sediment"
+mds_dat$WPDOrder<-droplevels(mds_dat$WPDOrder)
+
+cols<-colsO[names(colsO) %in% levels(mds_dat$WPDOrder)]
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=WPDOrder)) + geom_point(size=4) +  scale_color_manual(values=c(cols,"gray","gray70"))
+pMDS2 + theme(legend.position="none",axis.text=element_text(size=6)) 
+# extract Legend to plot below
+#legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+
+#pMDS2 + theme(legend.position="none",axis.text=element_text(size=6)) + geom_text_repel(aes(label=Species_consensus))
+# extract Legend to plot below
+#legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+#cowplot legend
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusmod)) + geom_point(size=4) + scale_color_manual(values=c(hma.col,lma.col),na.value="gray") + geom_text_repel(aes(label=Species_consensus)) + ggtitle("ASV ordination")
+#+ geom_text_repel(aes(label=Species_consensus))
+pMDS2 + theme(legend.position="above",axis.text=element_text(size=6))
+legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusRF_class)) + geom_point(size=4) + scale_color_manual(values=c(hma.col,lma.col),na.value="gray") 
+#+ geom_text_repel(aes(label=Species_consensus))
+pMDS2 + theme(legend.position="above",axis.text=element_text(size=6))
+legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+
+```
+
+```{r hulls, eval=F}
+#use chull function to create polygons
+#hull method 1
+mds_dat2<-mds_dat[!is.na(mds_dat$consensusRF_class),c("NMDS1", "NMDS2","consensusRF","Species_consensus")]
+
+hma.chull <- mds_dat2[mds_dat2$consensusRF_class == "HMA", ][chull(mds_dat2[mds_dat2$consensusRF_class == 
+    "HMA", c("NMDS1", "NMDS2")]), ]  # hull values for HMA
+lma.chull <- mds_dat2[mds_dat2$consensusRF_class == "LMA", ][chull(mds_dat2[mds_dat2$consensusRF_class == 
+    "LMA", c("NMDS1", "NMDS2")]), ]  # hull values for LMA
+
+hull.data <- rbind(hma.chull, lma.chull)  #combine grp.a and grp.b
+hull.data
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusRF_class,fill=consensusRF_class)) +   geom_point(size=4) + scale_color_manual(values=c(hma.col,lma.col),na.value="gray") 
+#+ geom_text_repel(aes(label=Species_consensus))
+
+pMDS2 + theme(legend.position="above",axis.text=element_text(size=6)) + geom_polygon(data=hull.data,alpha=0.10) + 
+  scale_fill_manual(values = c(hma.col,lma.col)) 
+legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+
+#hull method 2
+library(dplyr)
+hulls <- mds_dat[!is.na(mds_dat$consensusRF_class),] %>% select(NMDS1, NMDS2,consensusRF,Species_consensus) %>% group_by(consensusRF_class) %>% do(.[chull(.[c("NMDS1", "NMDS2")]), ])
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusRF_class,fill=consensusRF_class)) +   geom_point(size=4) + scale_color_manual(values=c(hma.col,lma.col),na.value="gray") + theme(legend.position="above",axis.text=element_text(size=6)) + geom_polygon(data=hulls,alpha=0.10) + 
+  scale_fill_manual(values = c(hma.col,lma.col)) 
+pMDS2
+
+#hull method 3
+library(ggpubr)
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusRF_class, fill=consensusRF_class)) +   geom_point(size=4) + scale_color_manual(values=c(hma.col,lma.col),na.value="gray") + 
+  scale_fill_manual(values = c(hma.col,lma.col)) + stat_chull( alpha = 0.1, geom = "polygon") 
+pMDS2
+```
+
+```{r biplotPhyla, fig.height=8,include=T}
+#biplot of HMA LMA using phyla abundances, with phyla loadings
+
+ord.nmds.bray <- phyloseq::ordinate(phylumGlommed, method="NMDS", distance="bray",k=10)
+pMDS<-plot_ordination(phylumGlommed, ord.nmds.bray, color="Species_consensus") + geom_text_repel(aes(label=Species_consensus)) + ggtitle("Ordination of phyla counts")
+
+mdsdat <-pMDS$data %>% dplyr::select(NMDS1,NMDS2,Species_consensus)
+
+tmp<-left_join(mdsdat, treemeta.u[,c("Species_consensus","WPDOrder","WPDFamily","phyloOrder","phyloFamily")],by =c("Species_consensus"))
+mds_dat<-left_join(tmp, char, by =c("Species_consensus"))
+mds_dat$WPDOrder<-factor(mds_dat$WPDOrder,levels=c(names(colsO),"seawater","sediment"))
+
+mds_dat$WPDOrder[mds_dat$Species_consensus=="seawater"]<-"seawater"
+mds_dat$WPDOrder[mds_dat$Species_consensus=="sediment"]<-"sediment"
+mds_dat$WPDOrder<-droplevels(mds_dat$WPDOrder)
+
+cols<-colsO[names(colsO) %in% levels(mds_dat$WPDOrder)]
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=WPDOrder)) + geom_point(size=4) +  scale_color_manual(values=c(cols,"gray","gray70"))
+pMDS2 + theme(legend.position="none",axis.text=element_text(size=6)) + geom_text_repel(aes(label=Species_consensus)) + ggtitle("Ordination of phyla counts")
+# extract Legend to plot below
+legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusmod)) + geom_point(size=4) +  scale_color_manual(values=c(hma.col,lma.col),na.value="gray")  + ggtitle("Ordination of phyla counts")
+pMDS2 + theme(legend.position="none",axis.text=element_text(size=1)) + geom_text_repel(aes(label=Species_consensus),size=2)
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusRF_class)) + geom_point(size=4) +  scale_color_manual(values=c(hma.col,lma.col),na.value="gray") + ggtitle("Ordination of phyla counts")
+pMDS2 + theme(legend.position="none",axis.text=element_text(size=1)) + geom_text_repel(aes(label=Species_consensus),size=3)
+# extract Legend to plot below
+legend <- cowplot::get_legend(pMDS2); ggdraw(legend)
+
+#biplot, add variable(PHYLUM) scores to MDS plot
+
+spscores<-data.frame(ord.nmds.bray$species)
+#rownames(spscores)<-tax_table(phylumGlommed)[,"KP"]
+spscores$phyla<-c(tax_table(phylumGlommed)[,"KP"])
+
+ggplot(mds_dat) + 
+  geom_point(aes(x=NMDS1,y=NMDS2,color=consensusRF_class),size=4) + 
+  scale_color_manual(values=alpha(c(hma.col,lma.col),0.5),na.value="gray") +
+  geom_point(spscores,mapping=aes(x=MDS1,y=MDS2)) +
+  geom_text_repel(data=spscores,mapping=aes(x=MDS1,y=MDS2,label=phyla),size=2) + theme(legend.position="none",axis.text=element_text(size=6)) + ggtitle("Ordination of phyla counts")
+
+#just the top phyla with predictive power in RF analysis
+
+library(tidyr)
+imp2<-data.frame(imp.phy[rev(order(rowSums(imp.phy[,1:2]))),1:2]); imp2$KP<-rownames(imp2)
+gathered<-gather(imp2,variable,value, -KP)
+gathered$KP<-factor(gathered$KP,levels=imp2$KP)
+
+ggplot(gathered, aes(x=KP, y=value)) +   
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+
+imp.phy$gglabel<-factor(rownames(imp.phy),levels=rownames(imp.phy))
+ggplot(imp.phy, aes(x=gglabel, y=MeanDecreaseAccuracy)) +   
+  geom_bar(aes(fill = enrichedIn), position = "dodge", stat="identity") +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+
+
+imp.spscores<-spscores[spscores$phyla %in% rownames(imp.phy),]
+
+ggplot(mds_dat) + 
+  geom_point(aes(x=NMDS1,y=NMDS2,color=consensusRF_class),size=4) + 
+  scale_color_manual(values=alpha(c(hma.col,lma.col),0.5),na.value="gray") +
+  geom_point(imp.spscores,mapping=aes(x=MDS1,y=MDS2)) +
+  geom_text_repel(data=imp.spscores,mapping=aes(x=MDS1,y=MDS2,label=phyla),size=4) + theme(legend.position="none",axis.text=element_text(size=6))  + ggtitle("Ordination of phyla counts\n with strongest diagnostic phyla for RF classification")
+```
+
+```{r facetMDS, fig.height=8,include=T}
+
+mds_dat<-mds_dat[!(mds_dat$Species_consensus %in% c("seawater","sediment")),]
+mds_dat<-mds_dat[!is.na(mds_dat$WPDOrder),]
+mds_dat<-droplevels(mds_dat)
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=WPDOrder)) + geom_point(size=3) + facet_wrap(~WPDOrder) + scale_color_manual(values=cols)
+pMDS2+ theme(legend.position="none",axis.text=element_text(size=6),strip.text=element_text(size=10)) 
+pMDS2+ theme(legend.position="none",axis.text=element_text(size=6),strip.text=element_text(size=10)) + geom_text_repel(aes(label=Species_consensus),size=2)
+
+pMDS2<-ggplot(mds_dat,aes(x=NMDS1,y=NMDS2,color=consensusRF_class)) + geom_point(size=3) + facet_wrap(~WPDOrder) + scale_color_manual(values=c(hma.col,lma.col))
+pMDS2+ theme(legend.position="none",axis.text=element_text(size=6),strip.text=element_text(size=10))
+
+```
+
+##Proportions of most abundant ASVs, by phylum
+
+```{r barplot,include=T}
+#alternative: barplot
+#remove rarest phyla since can't visualise in barplots
+#remove phyla  which never account for at least 0.5% of reads in at least one host
+#todo: use same colors as previous
+load("01_results/microColors.rds")#commonphyla_colors commonclass_colors
+#only plot top phyla names(commonphyla_colors)
+library(ggtree)
+
+keep<-tax_table(phylumGlommed)[,"KP"] %in% names(commonphyla_colors)
+dom.phy<-prune_taxa(keep,phylumGlommed)
+phyCols<-commonphyla_colors[tax_table(dom.phy)[,"KP"]]
+#transform to relabund
+relabund.phy.dom<-transform_sample_counts(dom.phy,function(OTU) OTU/sum(OTU))
+
+#set up graphics
+#re order the species to mirror the phylogenic order
+shared.top.relabund<-prune_samples(sample_names(relabund.phy.dom) %in% trspp,relabund.phy.dom)
+sample_sums(shared.top.relabund)
+
+#restrict samples to tree species
+timetr.dob<-keep.tip(timetr,tip=trspp)
+p<-ggtree(timetr.dob,right=T)
+p+geom_tiplab()
+get_taxa_name(p) #ggtree fxn to extract tiplabels in order on plottedtree
+sample_data(shared.top.relabund)$Species_consensus<- factor(sample_data(shared.top.relabund)$Species_consensus, 
+                                       levels = get_taxa_name(p))
+
+pbar<-plot_bar(shared.top.relabund, x="Species_consensus", fill="KP") +    scale_fill_manual(values = phyCols)
+pbar  + theme(legend.position="none",axis.text=element_text(size=6)) + ggtitle("Proportions of common ASVs, by phylum")
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+
+
+#just the phyla with RF importance
+relabund.mostimp<-prune_taxa(tax_table(dom.phy)[,"KP"] %in% imp.phy$bacterial_group,dom.phy)
+relabund.mostimp<-transform_sample_counts(relabund.mostimp,function(OTU) OTU/sum(OTU))
+
+shared.mostimp.relabund<-prune_samples(sample_names(relabund.mostimp) %in% trspp,relabund.mostimp)
+
+sample_data(shared.mostimp.relabund)$Species_consensus<- factor(sample_data(shared.mostimp.relabund)$Species_consensus, 
+                                       levels = get_taxa_name(p))
+sample_sums(shared.mostimp.relabund)
+phyCols2<-phyCols[names(phyCols) %in% imp.phy$bacterial_group]
+pbar<-plot_bar(shared.mostimp.relabund, x="Species_consensus", fill="KP") +    scale_fill_manual(values = phyCols2)
+pbar  + theme(legend.position="none",axis.text=element_text(size=6)) + ggtitle("Proportions of RF-indicative phyla")
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+
+```
+
+## Barplots of HMA vs LMA--original data 
+(rarified, etc, but not corrected by SW abundances)
+Showing proportions of the most abundant ASVs, by phylum.
+```{r barshmalma, include=T}
+ps<-shared.mostimp.relabund
+
+hmalma_state<-char$consensusRF_phyla
+names(hmalma_state)<-char$Species_consensus
+#hmalma_state<-hmalma_state[get_taxa_name(p)] #phylo-ordered
+
+#check matching
+sample_names(ps)[!(sample_names(ps) %in% names(hmalma_state))]
+
+hmalma_state<-hmalma_state[sample_names(ps)] #make sure vector in same species order 
+sample_data(ps)[,"hmalmaRF"]<- hmalma_state
+any(sample_sums(ps)>1)
+which(sample_sums(ps)<1)
+pstmp.h<-prune_samples(sample_data(ps)$hmalmaRF=="HMA",ps)
+pstmp.l<-prune_samples(sample_data(ps)$hmalmaRF=="LMA",ps)
+
+#resume here
+plotStackedBarsInOrder<-function(ps.ra,tree,colors){
+tree.match<-keep.tip(tree,tip=which(tree$tip.label %in% sample_names(ps.ra)))
+sample_names(ps.ra)[!(sample_names(ps.ra) %in% tree.match$tip.label )]
+keep<-sample_names(ps.ra)[(sample_names(ps.ra) %in% tree.match$tip.label )]
+ps.ra<-prune_samples(keep,ps.ra)
+gp<-ggtree(tree.match,right=T)
+sample_data(ps.ra)$Species_consensus<- factor(sample_data(ps.ra)$Species_consensus, 
+                                       levels = get_taxa_name(gp))
+
+
+pbarleg<-plot_bar(ps.ra, x="Species_consensus", fill="KP") +    scale_fill_manual(values = colors)
+
+return(pbarleg)
+}
+pdf(paste0(outDir,"phy_comp_barsHL.pdf"))
+
+colsH<-phyCols[names(phyCols) %in% imp.phy$bacterial_group]
+
+ph<-plotStackedBarsInOrder(pstmp.h,tree=timetr.dob,colors=colsH)
+pbar<-ph + theme(legend.position="none",axis.text=element_text(size=6)) 
+print(pbar)  
+legend <- cowplot::get_legend(ph); print(ggdraw(legend))
+
+pl<-plotStackedBarsInOrder(pstmp.l,tree=timetr.dob,colors=colsH)
+pbar<-pl + theme(legend.position="none",axis.text=element_text(size=6)) 
+print(pbar)  
+legend <- cowplot::get_legend(pl); print(ggdraw(legend))
+
+dev.off()
+```
+
+
+## Heatmaps of LMA and HMA sponges
+Heatmaps saved to PDFs: `HMAmicrobesheatmaps.pdf` and `LMAmicrobesheatmaps.pdf`.
+```{r twoheats}
+
+
+#use all ASVs not just commonest
+#transform to relabund
+psRmra<-transform_sample_counts(psRm,function(OTU) log(OTU+1))
+
+#set up graphics
+#re order the species to mirror the phylogenic order
+psRmra<-prune_samples(sample_names(psRmra) %in% trspp,psRmra)
+sample_sums(psRmra)
+
+#restrict samples to tree species
+timetr.dob<-keep.tip(timetr,tip=trspp)
+p<-ggtree(timetr.dob,right=T)
+get_taxa_name(p) #ggtree fxn to extract tiplabels in order on plottedtree
+Species.order<-get_taxa_name(p)
+sample_data(psRmra)$Species_consensus<- factor(sample_data(psRmra)$Species_consensus, 
+                                       levels =Species.order)
+
+sepHeatmaps<-function(tree, ps,treetitle,state){
+  p.phylo<-ggtree::ggtree(tree,right=T) + ggtree::geom_tiplab()
+  tipnames<-ggtree::get_taxa_name(p.phylo)
+  if(state=="LMA"){col<-lma.col}
+  if(state=="HMA"){col<-hma.col}
+  spong<-char$Species_consensus[char$consensusRF_class==state]
+  ps.state<-prune_samples(spong, ps)
+  if(any(sample_sums(ps.state)>0)){
+    ps.state<-merge_phyloseq(ps.state,tree)
+    sample_data(ps.state)$Species_consensus<-factor(sample_names(ps.state),levels=Species.order)
+    
+        pt.heat<-plot_heatmap(ps.state,taxa.order=tipnames,high=col,sample.order=Species.order,title=paste0(treetitle,": observed in HMA sponges"))
+  
+  return(pt.heat)
+  }
+}
+
+
+
+par(mar=c(5,5,5,5))
+
+plot_heats<- function(taxon,col) {
+  treefile<-paste0("bact_trees/rootedtrees/RAxML_result.",taxon,"_seqs")
+  if(file.exists(treefile)){
+    if( taxon %in% tax_table(psRmra)[,"KPC"] ){
+      pstax<-subset_taxa(psRmra,KPC==taxon)
+    }else{
+      pstax<-subset_taxa(psRmra,KP==taxon)
+    }
+  tr <- read.tree(treefile)
+  og<-grep("Outgroup",tr$tip.label)
+    rtr<-root(tr,outgroup=og)
+  #root then drop outgroups
+  #plot(rtrb)
+  tr<-ladderize(drop.tip(rtr,tip=og))
+  tr<-keep.tip(tr,tip = taxa_names(pstax))
+  if(Ntip(tr)>10){
+    ifelse(col==lma.col,state<-"LMA",state<-"HMA")
+  res<-sepHeatmaps(tree=tr,ps=pstax, treetitle=taxon,state=state)
+  print(res) 
+  }
+}else{ print(paste0(treefile, " doesn't exist"))}
+}
+
+pdf(paste0(outDir,"HMAmicrobesheatmaps.pdf"))
+hmas<-rownames(imps)[which(imps$enrichedIn=="HMA")]
+for (taxon in hmas) {
+  treefile<-paste0("../pipeline2/bact_trees/rootedtrees/RAxML_result.",taxon,"_seqs")
+  if(file.exists(treefile)){print(taxon)}
+plot_heats(taxon,hma.col)
+}
+dev.off()
+pdf(paste0(outDir,"LMAmicrobesheatmaps.pdf"))
+lmas<-rownames(imps)[which(imps$enrichedIn=="LMA")]
+for (taxon in lmas) {
+  treefile<-paste0("../pipeline2/bact_trees/rootedtrees/RAxML_result.",taxon,"_seqs")
+  if(file.exists(treefile)){print(taxon)}
+  plot_heats(taxon,lma.col)
+}
+dev.off()
+
+```
+
+## Microbial phyla: HMA or LMA-enriched, show average relative abund. 
+horizontal barplot, species as y, abundance x, facet by HMA or LMA and by phylum. PDF saved contrasting proportions between HMA,LMA species.
+```{r HMALMA_summaryRA, include=T,fig.height=30}
+pbar<-plot_bar(ps, x="Species_consensus", fill="KP") +   facet_wrap(KP~hmalmaRF,scales="free_x",ncol=4) +
+  scale_fill_manual(values = colsH)
+pbar<-pbar + theme(legend.position="none",axis.text=element_text(size=6),axis.text.x=element_blank(),axis.ticks.x=element_blank()) 
+print(pbar)  
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); print(ggdraw(legend))
+
+
+
+
+meltps<-melt(otu_table(ps))
+KP<-tax_table(ps)[match(meltps$X2,rownames(tax_table(ps))),"KP"]
+meltps<-cbind(meltps,KP)[,c(1,3,4)]
+colnames(meltps)<-c("Species_consensus","value","KP")
+
+#add in trait columns for plotting
+meltchar<-left_join(meltps, subset(char,select=c("Species_consensus","consensusRF_phyla")))
+# Error bars represent standard error of the mean
+meltchar$Species_consensus<-factor(meltchar$Species_consensus, levels=get_taxa_name(ggtree(timetr.dob,right=T)))
+meltchar$KP<-factor(meltchar$KP, levels=names(colsH))
+
+
+#color coral species, facet by site
+#test
+#pmini<-ggplot(meltchar[1:95,], aes(x=Species_consensus, y=value, fill=KP)) +  geom_bar(stat="identity") + scale_fill_manual(values=colsH) +  facet_wrap(~KP+consensusRF_phyla,scales="free_x",ncol=4) +  guides(fill=guide_legend(ncol=1)) + theme(strip.text.x = element_text(size = 8), axis.ticks.x=element_blank(),axis.text.y=element_text(size=8),axis.text.x=element_text(size=3,vjust=1,hjust = 1,angle=45)) +  labs(y="Mean read abundance") 
+#pmini
+pbar<-ggplot(meltchar, aes(x=Species_consensus, y=value, fill=KP)) + 
+    geom_bar(stat="identity") + scale_fill_manual(values=colsH) +
+    facet_wrap(~KP+consensusRF_phyla,scales="free_x",ncol=4) +  guides(fill=guide_legend(ncol=1)) + theme(strip.text.x = element_text(size = 8), axis.ticks.x=element_blank(),axis.text.x=element_text(size=3,vjust=1,hjust = 1,angle=45),axis.text.y=element_text(size=8)) + labs(y="Mean relative abundance per species") 
+pdf(paste0(outDir,"AveragePropHMA_LMA_bars.pdf"),height=50,width=20)
+pbar 
+#legend <- cowplot::get_legend(pbar)
+dev.off()
+```

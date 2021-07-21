@@ -1,0 +1,223 @@
+---
+title: "Biodiversity 16S: commununity composition"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide")
+```
+
+
+```{r load, echo=FALSE, include=FALSE}
+## Load libraries & set working directorylibrary(phyloseq); 
+set.seed(12345)
+library(phyloseq)
+library(ggplot2)
+library(ggrepel); library(cowplot)
+
+
+
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"01_results/"
+dir.exists(file.path(mainDir, outDir)) #verify directory created
+
+
+#set up graphics
+library(colorspace)
+cols32<-c(rainbow_hcl(8, l=30,start = 10, end = 300),
+          rainbow_hcl(8, l=50,start = 10, end = 300), 
+          rainbow_hcl(8, l=70,start = 10, end = 300), 
+          rainbow_hcl(8, l=90,start = 10, end = 300))
+getPalette =colorRampPalette(cols32)
+
+```
+
+
+
+
+### Alpha diversity for raw data
+Sponge Families are ordered by phylogeny. Haplosclerid 'families' are approximated, following phylogeny, and using Clade nomenclature from Redmond et al (2013). Non-rarefied (ie, raw) counts.
+```{r alpha, echo=FALSE, fig.width=10, fig.height=10}
+#Alpha Diversity after filtering
+load(paste0(outDir,"ps4.rds"))
+temp<-ps4
+keep<-sample_names(ps4)[which(sample_data(temp)$phyloTreeRank %in% c("","#N/A"))]
+
+temp<-prune_samples(!(sample_names(ps4) %in% keep),temp)
+sample_data(temp)$phyloTreeRank<-as.numeric(as.character(sample_data(temp)$phyloTreeRank))
+
+sample_data(temp)$phyloFamily<- factor(sample_data(temp)$phyloFamily, 
+                                       levels = unique(sample_data(temp)$phyloFamily[rev(order(sample_data(temp)$phyloTreeRank))]))
+
+pAlpha = plot_richness(temp,
+                       x="phyloFamily",
+                       color = "locale",
+                       measures = c("Shannon"),
+                       title = "Alpha Diversity, raw counts")
+pAlpha + geom_point(size = 2)
+
+```
+
+#Sponge Biodiversity
+Microbial community profiles, ordered by host phylogeny.
+
+ASV = amplicon sequence variant; i.e., unique 16S/microbe.
+```{r rarefy, echo=FALSE, fig.width=10, fig.height=10 }
+#Also need to have KronaTools installed on local machine to call the command ```ktImportText```
+#https://github.com/marbl/Krona/wiki/Installing
+#this will take a while
+#plot_krona(ps4,"krona", "Species_consensus",trim=T)
+
+
+#barplots
+# -rarefy
+# -merge counts by species or species/site (create dummy variable first)
+# -restore factor levels of interest after merge
+# -re-order species to follow phylogenetic order on x-axis
+# -glom taxa if desired
+# -save colorCount (number of categories)
+# -transform to relative abundance
+psR = rarefy_even_depth(ps4, sample.size = min(sample_sums(ps4)))
+save(psR,file=paste0(outDir,"psR.rds"))
+
+temp<-psR
+keep<-sample_names(psR)[which(sample_data(temp)$phyloTreeRank %in% c("","#N/A"))]
+
+temp<-prune_samples(!(sample_names(psR) %in% keep),temp)
+sample_data(temp)$phyloTreeRank<-as.numeric(as.character(sample_data(temp)$phyloTreeRank))
+
+sample_data(temp)$phyloFamily<- factor(sample_data(temp)$phyloFamily, 
+                                       levels = unique(sample_data(temp)$phyloFamily[rev(order(sample_data(temp)$phyloTreeRank))]))
+
+pAlpha = plot_richness(temp,
+                       x="phyloFamily",
+                       color = "locale",
+                       measures = c("Shannon"),
+                       title = "Alpha Diversity,after rarefaction")
+pAlpha + geom_point(size = 2) 
+
+```
+
+```{r merge_speciesbarplot, echo=FALSE, fig.width=10, fig.height=10 }
+#1 summarize abundances according to Species_consensus using merge
+psRm<- merge_samples(psR,"Species_consensus") 
+# repair factors after merge:
+sample_data(psRm)$Species_consensus <- levels(sample_data(psR)$Species_consensus)[get_variable(psRm,"Species_consensus")]
+sample_data(psRm)$phyloOrder <- levels(sample_data(psR)$phyloOrder)[get_variable(psRm,"phyloOrder")]
+sample_data(psRm)$phyloFamily <- levels(sample_data(psR)$phyloFamily)[get_variable(psRm,"phyloFamily")]
+
+
+sample_data(psRm)$phyloOrder[sample_data(psRm)$Species_consensus==" seawater"]<-"seawater"
+sample_data(psRm)$phyloOrder[sample_data(psRm)$Species_consensus==" sediment"]<-"sediment"
+psRm<-prune_samples(sample_names(psRm)!="",psRm) #removes Pankey072-SX317 --unidentified species
+save(psRm,file=paste0(outDir,"psRm_bySpecies.rds"))
+
+
+#plot top X most abundant ASVs by phylum
+top <- names(sort(taxa_sums(psRm), decreasing=TRUE))[1:3000]
+ps.top <- prune_taxa(top, psRm)
+top.relabund <- transform_sample_counts(ps.top, function(OTU) OTU/sum(OTU)) #convert to relative abundance
+#sample_sums(top.relabund) #should be 1
+
+#todo import species tree to reorder x-axis factor to match phylogenetic order...repair factors not working
+
+# KINGDOM: due to size, plot bars and legend separately
+colourCount = length(unique(tax_table(top.relabund)[,"Kingdom"])) 
+pbar<-plot_bar(top.relabund, x="Species_consensus", fill="Kingdom")  + scale_fill_manual(values = getPalette(colourCount)) + guides(fill=guide_legend(ncol=1))
+pbar  + ggtitle("Relative abundance of 1000 most common ASVs (by Kingdom on filtered counts)") + theme(legend.position="none",axis.text=element_text(size=6))
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+
+# PHYLUM: due to size, plot bars and legend separately
+colourCount = length(unique(tax_table(top.relabund)[,"KP"])) 
+pbar<-plot_bar(top.relabund, x="Species_consensus", fill="KP")  + scale_fill_manual(values = getPalette(colourCount)) + guides(fill=guide_legend(ncol=2))
+pbar  + ggtitle("Relative abundance of 3000 most common ASVs (by PHYLUM on filtered counts)") + theme(legend.position="none",axis.text=element_text(size=6))
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+#save color scheme for plotting phyla later
+commonphyla_colors<-getPalette(colourCount)
+names(commonphyla_colors)<-unique(tax_table(top.relabund)[,"KP"])
+
+
+# CLASS: due to size, plot bars and legend separately
+colourCount = length(unique(tax_table(top.relabund)[,"KPC"])) 
+pbar<-plot_bar(top.relabund, x="Species_consensus", fill="KPC")  + scale_fill_manual(values = getPalette(colourCount)) + guides(fill=guide_legend(ncol=2))
+pbar  + ggtitle("Relative abundance of 3000 most common ASVs (by CLASS on filtered counts)") + theme(legend.position="none",axis.text=element_text(size=6))
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+#save color scheme for plotting classes later
+commonclass_colors<-getPalette(colourCount)
+names(commonclass_colors)<-unique(tax_table(top.relabund)[,"KPC"])
+
+save(commonclass_colors,commonphyla_colors,file=paste0(outDir,"microColors.rds"))
+
+#todo: clean up make less redundant
+
+#2 facet by locale
+sample_data(psR)$SiteSp<-as.factor(paste0(sample_data(psR)$locale, sample_data(psR)$Species_consensus)) #dummy factor
+psRm<- merge_samples(psR,"SiteSp") #merge counts then repair factors:
+sample_data(psRm)$Species_consensus <- levels(sample_data(psR)$Species_consensus)[get_variable(psRm,"Species_consensus")]
+sample_data(psRm)$locale <- levels(sample_data(psR)$locale)[get_variable(psRm,"locale")]
+top <- names(sort(taxa_sums(psRm), decreasing=TRUE))[1:3000]
+ps.top <- prune_taxa(top, psRm)
+#reorder factor to match phylogenetic order
+sample_data(ps.top)$Species_consensus<- factor(sample_data(ps.top)$Species_consensus, 
+                                               levels = unique(sample_data(ps.top)$Species_consensus[order(sample_data(ps.top)$phyloTreeRank)]))
+
+
+# PHYLUM: agglomerate by phylum and facet by locale
+
+phylumGlommed = tax_glom(ps.top, taxrank="Phylum")
+tax_table(phylumGlommed)[,"KP"]<-paste0(tax_table(phylumGlommed)[,"Kingdom"],"_",tax_table(phylumGlommed)[,"Phylum"])
+colourCount = length(unique(tax_table(phylumGlommed)[,"KP"])) 
+top.relabund.glom <- transform_sample_counts(phylumGlommed, function(OTU) OTU/sum(OTU)) #convert to relative abundance
+#sample_sums(top.relabund.glom) #should all be 1
+
+pbar<-plot_bar(top.relabund.glom, x="Species_consensus", fill="KP") + facet_wrap(~locale, scales="free_x")  + scale_fill_manual(values = getPalette(colourCount))
+pbar  + theme(legend.position="none",axis.text=element_text(size=6)) 
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+
+# CLASS: agglomerate by phylum and facet by locale
+classGlommed = tax_glom(ps.top, "Class")
+tax_table(classGlommed)[,"KPC"]<-paste0(tax_table(classGlommed)[,"Kingdom"],"_",tax_table(classGlommed)[,"Phylum"],"_",tax_table(classGlommed)[,"Class"])
+
+colourCount = length(unique(tax_table(classGlommed)[,"KPC"])) 
+top.relabund.glom <- transform_sample_counts(classGlommed, function(OTU) OTU/sum(OTU)) #convert to relative abundance
+#sample_sums(top.relabund.glom) #should all be 1
+
+pbar<-plot_bar(top.relabund.glom, x="Species_consensus", fill="KPC") + facet_wrap(~locale, scales="free_x")  + scale_fill_manual(values = getPalette(colourCount)) +guides(fill=guide_legend(ncol=2))
+pbar  + theme(legend.position="none",axis.text=element_text(size=6)) 
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+```
+
+Restricting the plots to `r ntaxa(ps.top)` out of `r ntaxa(psRm)` still accounts for `r sum(taxa_sums(ps.top))/sum(taxa_sums(psRm))*100`% of all rarefied-read counts.
+
+#CLR transform counts for statistics
+```{r transform}
+psCLR = microbiome::transform(psR, transform = "clr", target = "OTU", shift = 0, scale = 1)
+save(psCLR,file=paste0(outDir,"psCLR.rds"))
+
+  # Aitchison Distance Metric (see Gloor et al.) is euclidean distances between samples after
+  # a clr (centered-log-ratio) transformation)
+  #http://www.gastonsanchez.com/visually-enforced/how-to/2012/10/03/Dendrograms/
+  #http://www.sthda.com/english/wiki/beautiful-dendrogram-visualizations-in-r-5-must-known-methods-unsupervised-machine-learning
+DistACH = distance(psCLR, method = "euclidean")
+ save(DistACH,file=paste0(outDir,"DistACH.rds"))
+
+```
+
+
+

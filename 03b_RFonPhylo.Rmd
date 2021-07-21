@@ -1,0 +1,456 @@
+---
+title: "HMA/LMA state predictions on sponge phylogeny"
+author: "Sabrina Pankey"
+date: "2/25/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,fig.width = 8)
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"03_char_results/"
+dir.exists(file.path(mainDir, outDir))
+library(ape)
+library(dplyr)
+library(colorspace)
+library(ggtree)
+library(ggplot2)
+library(phytools)
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+
+ #load host states predicted by RF
+load(paste0(outDir,"species_charsRF.Rds")) #use char$consensusRF_phyla
+char$RFtrainer<-!is.na(char$consensusmod)
+
+chars<-read.csv("02_input_spongetree/chars_by_species.csv",header = T,stringsAsFactors = F) #1st column (NOT rownames) must match tip labels for ggtree
+
+char<-left_join(char,chars)
+#original counts by sponge species
+load("01_results/psRm_bySpecies.rds") 
+library(phyloseq)
+#host tree
+load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #loads 'timetr', treemeta.u, cladelist, cladecols
+#species phylo-ordered
+timetr.dob<-keep.tip(timetr,tip=timetr$tip.label [timetr$tip.label %in% sample_data(psRm)$Species_consensus])
+p<-ggtree(timetr.dob,right=T)
+Species.order<-c(get_taxa_name(p),"seawater","sediment")
+
+psRm.t<-prune_samples(c(sample_names(psRm)[sample_names(psRm) %in% timetr.dob$tip.label],"sediment","seawater"),psRm)
+unloadNamespace("phyloseq")
+
+load(paste0(outDir,"psRm.phylum.Rds")) #phylumGlommed, relabund.phy
+
+load(paste0(outDir,"mostImp.Rds"))
+imps<-rbind(imp.phy,imp.cl)
+
+```
+
+
+##Sponge phylogeny 
+### Species tree with RF predictions
+```{r tree_w_RF}
+tr<-timetr
+
+p<-ggtree(tr,right=T) 
+p %<+% char + geom_tiplab(size=2,align=T,linesize = 0.1) + geom_tippoint(aes(color=EM_Gloeckner))  +  scale_color_manual(values=c(hma.col,lma.col))  + ggtitle("Empirical assessments (Gloeckner et al.)")
+
+p %<+% char + geom_tippoint(aes(color=consensusmod))  + geom_tiplab(size=2,align=T,linesize = 0.1) + scale_color_manual(values=c(hma.col,lma.col)) + ggtitle("Published predictions")
+
+
+p %<+% char + geom_tiplab(size=2,align=T,linesize = 0.1) + geom_tippoint(aes(color=consensusRF_class,shape=RFtrainer))  +  scale_color_manual(values=c(hma.col,lma.col)) + ggtitle("New predictions (RF on class abundance")
+
+
+p %<+% char + geom_tippoint(aes(color=consensusRF_class,shape=RFtrainer))  +  scale_color_manual(values=c(hma.col,lma.col))
+
+drop<-char$Species_consensus[is.na(char$consensusRF_phyla)]
+tr<-drop.tip(timetr,tip=drop)
+p<-ggtree(tr,layout="circular") 
+p %<+% char + geom_tippoint(aes(color=consensusRF_class,shape=RFtrainer))  +  scale_color_manual(values=c(hma.col,lma.col))
+p<-ggtree(tr,right=T) 
+p %<+% char + geom_tiplab(size=2,align=T,linesize = 0.1) + geom_tippoint(aes(color=consensusRF_class,shape=RFtrainer))  +  scale_color_manual(values=c(hma.col,lma.col))
+
+#split into hma and lma trees
+hmaspp<-char$Species_consensus[char$consensusRF_phyla=="HMA"]
+hmaspp<-hmaspp[!is.na(hmaspp)]
+keeptip<-timetr$tip.label[timetr$tip.label %in% hmaspp]
+hmatree<-keep.tip(timetr,tip=keeptip)
+#plot(hmatree, main="HMA only sponges")
+ggtree(hmatree,right=T) +ggtitle("HMA only sponges") + geom_tiplab(size=2)
+
+lmaspp<-char$Species_consensus[char$consensusRF_phyla=="LMA"]
+lmaspp<-lmaspp[!is.na(lmaspp)]
+keeptip<-tr$tip.label[tr$tip.label %in% lmaspp]
+lmatree<-keep.tip(tr,tip=keeptip)
+#plot(lmatree, main="LMA only sponges")
+ggtree(lmatree,right=T) +ggtitle("LMA only sponges") + geom_tiplab(size=2)
+
+
+```
+
+## Compare HMA and LMA patterns of evolution
+
+Heatmaps of hma or lma trees with abundance of top RF predictor phyla
+```{r splittrees}
+library(phyloseq)
+
+phylakeep<-imp.phy$bacterial_group[imp.phy$MeanDecreaseAccuracy>2]
+
+# use relabund for phyla-glommed counts, with hma/lma in sample data
+x<-prune_samples(timetr.dob$tip.label,relabund.phy); 
+ dat<-data.frame(otu_table(x));  colnames(dat)<-tax_table(x)[,"KP"] ; 
+dat<-dat[which(rownames(dat) %in% timetr.dob$tip.label),phylakeep]
+
+#try CLR instead of relabund
+phyglom.clr<-microbiome::transform(phylumGlommed, transform = "clr", target = "OTU", shift = 0, scale = 1)
+phyglom.clr<-prune_samples(tr$tip.label,phyglom.clr)
+dat2<-as.data.frame(otu_table(phyglom.clr)); colnames(dat2)<-tax_table(phyglom.clr)[,"KP"] ; 
+dat2<-dat2[which(rownames(dat2) %in% tr$tip.label),phylakeep]
+
+
+
+library(viridis); heat.cols<-viridis_pal(option="C")(20)
+gheatmap(ggtree(timetr.dob,right=T), dat, offset=0, width=1, low=heat.cols[1], high=heat.cols[20], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("Relative abundances of diagnostic phyla sponges") +ylim(0,120)
+
+gheatmap(ggtree(timetr.dob,right=T), dat2, offset=0, width=1, low=heat.cols[1], high=heat.cols[20], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("CLR abundances of diagnostic phyla sponges") +ylim(0,120)
+
+
+#split by hma or lma only trees
+lmatree.match<-keep.tip(lmatree,tip=which(lmatree$tip.label %in% rownames(dat)))
+datl<-dat[which(rownames(dat) %in% lmatree.match$tip.label),phylakeep]
+dat2l<-dat2[which(rownames(dat2) %in% lmatree.match$tip.label),phylakeep]
+
+# add heatmap
+gheatmap( ggtree(lmatree.match,right=T), datl, offset=0, width=1, low=heat.cols[1], high=heat.cols[20], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("Relative abundances of diagnostic phyla in LMA sponges") +ylim(0,50)
+
+gheatmap( ggtree(lmatree.match,right=T), dat2l, offset=0, width=1, low=heat.cols[1], high=heat.cols[20], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("CLR abundances of diagnostic phyla in LMA sponges") +ylim(0,50)
+
+
+hmatree.match<-keep.tip(hmatree,tip=which(hmatree$tip.label %in% rownames(dat)))
+dath<-dat[which(rownames(dat) %in% hmatree.match$tip.label),phylakeep]
+dat2h<-dat2[which(rownames(dat2) %in% hmatree.match$tip.label),phylakeep]
+
+# add heatmap
+gheatmap( ggtree(hmatree.match,right=T), dath, offset=0, width=1, low=heat.cols[1], high=heat.cols[20], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("Relative abundances of diagnostic phyla in HMA sponges") +ylim(0,70)
+
+gheatmap( ggtree(hmatree.match,right=T), dat2h, offset=0, width=1, low=heat.cols[1], high=heat.cols[20], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("CLR abundances of diagnostic phyla in LMA sponges") +ylim(0,70)
+
+
+
+```
+
+```{r setupdata_richness_estimate}
+load("01_results/psR.rds") #psR unmerged sample counts
+load(paste0(outDir,"species_charsRF.Rds") )#use char$consensusRF_phyla
+
+keep<-sample_names(psR)[sample_data(psR)$Species_consensus %in% Species.order]
+ps.adj<-prune_samples(keep,psR)
+sample_data(psR)$Species_consensus<- factor(sample_data(psR)$Species_consensus, levels = Species.order)
+dat1<-data.frame(sample_data(psR))
+rnams<-rownames(dat1)
+library(dplyr)
+dat2<-left_join(dat1,char, by=c("Species_consensus"))
+dat2<-dat2 %>% select(Species_consensus,consensusmod,consensusRF_asv,consensusRF_class,consensusRF_phyla)
+dat2$RFprediction<-dat2$consensusRF_phyla
+dat3<-left_join(dat2,treemeta.u); rownames(dat3)<-rnams
+sample_data(psR)<-dat3
+psR<-prune_taxa(taxa_sums(psR)>0,psR)
+psR<-prune_samples(sample_sums(psR)>0,psR)
+
+#get species averages to plot for tree
+avgSvals<-function(ps,x){
+  tot<-prune_samples(sample_data(ps)$RFprediction==x,ps) #xMA sponge SAMPLES
+  xtx<-prune_taxa(taxa_sums(tot)>0,tot) #all the taxa found across xMAs sampled
+  S.sponge <- apply(otu_table(xtx)>0,2,sum) # S = total number of ASVs with non-zero abundance in a xMA sponge SAMPLE
+  H.sponge <- apply(otu_table(xtx),2,function(x) vegan::diversity(x)) # H = shannon diversity in a xMA sponge SAMPLE
+  spv <- factor(sample_data(xtx)$Species_consensus)
+mean_S <- sapply(levels(spv),function(i){
+  mean(S.sponge[spv==i])}) #species average richness
+mean_H <- sapply(levels(spv),function(i){
+  mean(H.sponge[spv==i])}) #species average Shannon
+return(list(S.sponge,mean_S,H.sponge, mean_H))
+}
+hma.S<-avgSvals(psR,"HMA")
+lma.S<-avgSvals(psR,"LMA")
+```
+
+## co-phyloplot of 16S communities and sponge SPECIES
+
+```{r cophylospp_setup, include=F}
+#drop microbe samples if from a species not in tree:
+
+# resume here, get tree labels to match species names in psRm
+timetr$tip.label %in% treemeta.u$Species_consensus
+#ok
+keep<-rownames(sample_data(psRm.t)) [(rownames(sample_data(psRm.t)) %in% timetr$tip.label)]
+
+psRm2<-prune_samples(keep,psRm.t)
+
+#get CLR distances
+psCLRsp<-microbiome::transform(psRm2, transform = "clr", target = "OTU", shift = 0, scale = 1)
+unloadNamespace("microbiome")
+
+
+sp_dists<-phyloseq::distance(psCLRsp, method = "euclidean")
+#sp_distsB<-phyloseq::distance(psRm2, method = "bray")
+
+unloadNamespace("phyloseq")
+#use below as guide to finsih this
+hc<-hclust(sp_dists)
+hc$labels
+tr16<-ape::as.phylo(hc); tr16$tip.label<-as.character(tr16$tip.label)
+
+#hcB<-hclust(sp_distsB)
+#tr16B<-ape::as.phylo(hcB); tr16B$tip.label<-as.character(tr16B$tip.label)
+
+
+#check match
+tr16$tip.label[!(tr16$tip.label %in% timetr$tip.label)]
+timetr$tip.label[!(timetr$tip.label %in% tr16$tip.label)]
+
+timetr.DOB<-drop.tip(timetr,tip=timetr$tip.label[!(timetr$tip.label %in% tr16$tip.label)])
+timetr.DOB$tip.label[!(timetr.DOB$tip.label %in% tr16$tip.label)]
+
+#ggtree(timetr.DOB,right=T) %<+% treemeta.u + geom_tippoint(aes(color=phyloOrder), size=3) +scale_color_manual(values=colsC)
+
+# check names match
+trA<-timetr.DOB;trB<-tr16
+#trB<-tr16B
+trA$tip.label %in% trB$tip.label
+trB$tip.label %in% trA$tip.label
+
+cophyloWrap<-function(trA,trB){
+
+#rotate B using A
+ord<-setNames(1:length(trA$tip.label),trA$tip.label)
+trB<-minRotate(trB,ord)
+
+#rotate A using new B
+ord2<-setNames(1:length(trB$tip.label),trB$tip.label)
+ord2<-ord2[names(ord2) %in% trA$tip.label]
+trA<-tipRotate(trA,ord2,rotate.multi=TRUE)
+#final re-rotate B using new A
+ord3<-setNames(1:length(trA$tip.label),trA$tip.label)
+trB<-minRotate(trB,ord3)
+return(list(trA,trB))
+}
+
+
+
+rotatedtrees<-cophyloWrap(trA,trB)
+trA<-rotatedtrees[[1]]
+trB<-rotatedtrees[[2]]
+
+colsCbytip<-c()
+for (i in 1:length(trA$tip.label)){
+    ti<-treemeta.u[treemeta.u$Species_consensus==trA$tip.label[i],]
+    if (ti$phyloOrder %in% names(cladecols)){
+  colsCbytip<-c(colsCbytip,cladecols[ which(names(cladecols)==ti$phyloOrder)])
+    } else{ colsCbytip<-c(colsCbytip,"gray")}
+    names(colsCbytip)[i]<-trA$tip.label[i] 
+}
+```
+
+```{r coplots,fig.height=10}
+#minRotate swaps out ' ' for '_' on trB...repeat to match labels for trA
+trA$tip.label<-gsub(" ","_",trA$tip.label)
+colsC_bytip<-colsCbytip
+names(colsC_bytip)<-gsub(" ","_",names(colsCbytip) )
+
+association <- cbind(trA$tip.label,trA$tip.label )
+
+source("src/cophyloplotMSP.R")
+cophyloplotMSP(trA,trB, assoc=association, space=800,gap=4,lwd=1,col=colsCbytip,use.edge.length = T,textcex=0.4)
+
+cophyloplotMSP(trA,trB, assoc=association, show.tip.label = F, space=400,gap=4,lwd=1,col=colsCbytip,use.edge.length = F,textcex=0.4)
+myclades<-cladecols[cladecols %in% unique(colsCbytip)]
+legend("topleft",names(myclades),col=myclades,bty="n",pch=15,cex=0.3)
+text(200,-20,"Sponge timetree")
+text(1000,-20,"Microbiome distance")
+
+
+#use char$consensusRF_phyla for LMA/HMA prediction for now
+is_tip <- timetr.DOB$edge[,2] <= length(timetr.DOB$tip.label)
+ordered_tips <- timetr.DOB$edge[is_tip, 2]
+trtips<-rev(timetr.DOB$tip.label[ordered_tips])
+
+char1<-char[char$Species_consensus %in% trtips,]
+lty_RFstates<-char1[match(trtips,char1$Species_consensus),] #get ordered and matching tree
+
+lty_RFstates$consensusRF_phyla[lty_RFstates$consensusRF_phyla=="HMA"]<-1; lty_RFstates$consensusRF_phyla[lty_RFstates$consensusRF_phyla=="LMA"]<-2
+ltys<-as.numeric(lty_RFstates$consensusRF_phyla)
+#pdf(paste0(outDir,"fig5_allspp.pdf"),height=11,width=8,useDingbats = F)
+cophyloplotMSP(trA,trB, assoc=association, show.tip.label = F, space=400,gap=4,lwd=1,lty=ltys,col=colsCbytip,use.edge.length = F,textcex=0.4)
+legend("topleft",names(myclades),col=myclades,bty="n",pch=15,cex=0.3)
+text(200,-20,"Sponge timetree")
+text(1000,-20,"Microbiome distance")
+
+#stats
+library(phangorn)
+#normalize by dividing distance by number of internal branches = 2(n-3) for n-tip tree
+rfdis<-RF.dist(trA,trB,normalize = T)
+wRF<-wRF.dist(trA,trB,normalize = TRUE)
+path<-path.dist(trA,trB)
+#sprdist(tr_ordered,tr16d) too slow
+KF<-KF.dist(trA,trB)
+rftest<-cospeciation(trA,trB,assoc=association)
+sdat1<-c(hma.S[[2]],lma.S[[2]]); names(sdat1)<-gsub(" ","_",names(c(hma.S[[2]],lma.S[[2]]))) #observed
+sdat<-c(hma.S[[4]],lma.S[[4]]); names(sdat)<-gsub(" ","_",names(c(hma.S[[4]],lma.S[[4]]))) #shannon
+
+sdat1<-sdat1[match(trA$tip.label,names(sdat1))]; sdat<-sdat[match(trA$tip.label,names(sdat))]
+pagels1<-phylosig(trA,sdat1,method="lambda",test=T) #
+blomK1<-phylosig(trA,sdat1,test=T) #
+pagels<-phylosig(trA,sdat,method="lambda",test=T) #
+blomK<-phylosig(trA,sdat,test=T) #
+
+#shannon<-vegan::diversity((otu_table(psRm2))) 
+#pagels<-phylosig(trA,shannon,method="lambda",test=T) ##makes no difference
+
+plot(trA,use.edge.length=F,show.tip.label=F)
+
+tiplabels(pch=16,col=colsCbytip,cex=sdat/3,adj=2)
+#dev.off()
+```
+Overall measures of phylosymbiosis:
+- Pagel's Lamda estimate for signal of richness: `r pagels1$lambda` p-value: `r pagels1$P`
+- Blomberg's K estimate for signal of richness: `r blomK1$K` p-value: `r blomK1$P`
+- Pagel's Lamda estimate for signal of Shannons: `r pagels$lambda` p-value: `r pagels$P`
+- Blomberg's K estimate for signal of Shannons: `r blomK$K` p-value: `r blomK$P`
+- Robinson-Foulds topopological similarity `r rfdis` p-value: `r rftest$P.val`
+- edgeweighted Robinson Foulds (Robinson & Foulds 1981): `r wRF`
+- path difference metric (Steel and Penny 1993): `r path`
+- branch score distance (Kuhner & Felsenstein 1994): `r KF`
+
+```{r simpletreeofDOBspecies}
+treemeta.t<-treemeta.u[treemeta.u$Species_consensus %in% timetr.DOB$tip.label,]
+phyOrdertips<-lapply(names(cladecols),function(x) treemeta.t$Species_consensus[treemeta.t$phyloOrder ==x])
+
+cladecols.dob<-cladecols[which(sapply(phyOrdertips,function(x) length(x)>0))]
+library(ggtree)
+groupedTree2<- groupOTU(timetr.DOB,phyOrdertips)
+pdf(paste0(outDir,"simpleDOBsptree.pdf"),height=10)
+ggtree(groupedTree2, aes(color=group)) + geom_tiplab(size=1) + scale_color_manual(values=c("black",cladecols.dob))
+dev.off()
+
+
+```
+
+## Separate co-phyloplots of 16S communities and sponge SPECIES for HMA/LMA
+```{r cophylospp_subplot}
+library(phangorn)
+#drop microbe samples if from a species not in tree:
+#subtree<-lmatree; tipcols<-colsCbytip; cladecols<-cladecols
+#subtree<-hmatree
+#ok
+library(phyloseq)
+cophylo_subtree<-function(subtree,tipcols,cladecols){
+  
+keep<-rownames(sample_data(psRm)) [(rownames(sample_data(psRm)) %in% subtree$tip.label)]
+psRm2<-prune_samples(keep,psRm)
+psRm2<-prune_taxa(taxa_sums(psRm2)>0,psRm2)
+subtree<-keep.tip(subtree,tip=sample_names(psRm2))
+
+subtreecols<-tipcols[names(tipcols) %in% subtree$tip.label]
+
+
+#get CLR distances
+psCLRsp<-microbiome::transform(psRm2, transform = "clr", target = "OTU", shift = 0, scale = 1)
+sp_dists<-phyloseq::distance(psCLRsp, method = "euclidean")
+hc<-hclust(sp_dists)
+hc$labels<-rownames(sample_data(psCLRsp))
+
+tr16z<-ape::as.phylo(hc); tr16z$tip.label<-as.character(tr16z$tip.label)
+#drop species from sponge tree if no microbial sample
+trZ<-drop.tip(subtree,subtree$tip.label[!(subtree$tip.label %in% tr16z$tip.label)])
+plot(trZ)
+
+# check names match
+trA<-trZ;trB<-tr16z
+trA$tip.label %in% trB$tip.label
+trB$tip.label %in% trA$tip.label
+
+
+rotatedtrees<-cophyloWrap(trA,trB)
+trA<-rotatedtrees[[1]]
+trB<-rotatedtrees[[2]]
+
+
+#minRotate swaps out ' ' for '_' on trB...repeat to match labels for trA
+trA$tip.label<-gsub(" ","_",trA$tip.label)
+names(subtreecols)<-gsub(" ","_",names(subtreecols) )
+subtreecols<-subtreecols[match(trA$tip.label,names(subtreecols))]
+association <- cbind(trA$tip.label,trA$tip.label )
+
+source("src/cophyloplotMSP.R")
+cophyloplotMSP(trA,trB, assoc=association, space=800,gap=4,lwd=1,col=subtreecols,use.edge.length = T,textcex=0.4)
+myclades<-cladecols[cladecols %in% unique(subtreecols)]
+
+legend("topleft",names(myclades),col=myclades,bty="n",pch=15,cex=0.3)
+
+cophyloplot(trA,trB, assoc=association, space=200,gap=4,show.tip.label = F,col=subtreecols)
+text(50,-1,"sponge phylogeny",cex=0.5)
+text(250,-1,"microbial composition",cex=0.5)
+plot.new()
+legend("topleft",names(myclades),col=myclades,bty="n",pch=15,cex=0.5)
+
+library(phangorn)
+#normalize by dividing distance by number of internal branches = 2(n-3) for n-tip tree
+rfdis<-RF.dist(trA,trB,normalize = T)
+wRF<-wRF.dist(trA,trB,normalize = TRUE)
+path<-path.dist(trA,trB)
+#sprdist(tr_ordered,tr16d) too slow
+KF<-KF.dist(trA,trB)
+rftest<-cospeciation(trA,trB,assoc=association)
+
+subS1<-c(hma.S[[2]],lma.S[[2]])
+subS1<-subS1[names(subS1) %in% subtree$tip.label]
+sdat1<-subS1; names(sdat1)<-gsub(" ","_",names(subS1))
+sdat1<-sdat1[match(trA$tip.label,names(sdat1))]
+
+subS<-c(hma.S[[4]],lma.S[[4]])
+subS<-subS[names(subS) %in% subtree$tip.label]
+sdat<-subS; names(sdat)<-gsub(" ","_",names(subS))
+sdat<-sdat[match(trA$tip.label,names(sdat))]
+
+plot(trA,use.edge.length=F,show.tip.label=F,x.lim=c(0,50))
+tiplabels(pch=16,col=subtreecols,cex=sdat/3,adj=2)
+
+pagels<-phylosig(subtree,subS,method="lambda",test=T) #0.87
+blomK<-phylosig(subtree,subS,test=T) #HMA:0.8158636, p 0.17
+
+return(list(pagels,blomK,rfdis,wRF,path,KF,rftest$P.val,mean(subS)))
+}
+pdf(paste0(outDir,"fig5_HMALMAspp.pdf"),height=5,width=5, useDingbats = F)
+
+lmacoplot<-cophylo_subtree(lmatree,colsCbytip,cladecols)
+hmacoplot<-cophylo_subtree(hmatree,colsCbytip,cladecols)
+dev.off()
+```
+
+###Phylosymbiosis metrics
+Pagels and Blomberg's evaluate phylogenetic signal of ASV richness using the Shannon index. RF distance measures topological similarity between sponge tree and the hierarchical clustering dendrogram describing community similarity.
+
+#####HMA:
+
+- Pagel's Lamda estimate: `r hmacoplot[[1]]$lambda` p-value: `r hmacoplot[[1]]$P`
+- Blomberg's K estimate: `r hmacoplot[[2]]$K` p-value: `r hmacoplot[[2]]$P`
+- Robinson-Foulds topopological similarity `r hmacoplot[[3]]` p-value: `r hmacoplot[[7]]`
+- edgeweighted Robinson Foulds (Robinson & Foulds 1981): `r hmacoplot[[4]]`
+- path difference metric (Steel and Penny 1993): `r hmacoplot[[5]]`
+- branch score distance (Kuhner & Felsenstein 1994): `r hmacoplot[[6]]`
+- average number of ASVs per sponge: `r mean(hmacoplot[[8]])` (calc from original sample rarefiedcounts)
+
+#####LMA:
+
+- Pagel's Lamda estimate: `r lmacoplot[[1]]$lambda` p-value: `r lmacoplot[[1]]$P`
+- Blomberg's K estimate: `r lmacoplot[[2]]$K` p-value: `r lmacoplot[[2]]$P`
+- Robinson-Foulds topopological similarity `r lmacoplot[[3]]` p-value: `r lmacoplot[[7]]`
+- edgeweighted Robinson Foulds (Robinson & Foulds 1981): `r lmacoplot[[4]]`
+- path difference metric (Steel and Penny 1993): `r lmacoplot[[5]]`
+- branch score distance (Kuhner & Felsenstein 1994): `r lmacoplot[[6]]`
+- average number of ASVs per sponge: `r mean(lmacoplot[[8]])` (calc from original sample rarefiedcounts)
+
+
+

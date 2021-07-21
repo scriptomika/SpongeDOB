@@ -1,0 +1,640 @@
+---
+title: "Symbiont specificity"
+output: 
+  html_document:
+  toc: true
+toc_float: true
+collapsed: false
+toc_depth: 4
+df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,fig.width = 8, results="markdown")
+options(scipen = 999)
+```
+
+
+```{r load, echo=FALSE, include=FALSE} 
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"07_divresults/"
+ifelse(!dir.exists(file.path(mainDir, outDir)), dir.create(file.path(mainDir, outDir)), FALSE)
+library(phyloseq,warn.conflicts = FALSE)
+library(reshape2)
+options(getClass.msg=FALSE)
+library(colorspace)
+library(ggplot2)
+library(ape)
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+hsol.col<-rainbow_hcl(24)[2];lsol.col<-rainbow_hcl(24)[14]
+library(dplyr)
+
+#inputs: 
+# -psR (all samples, count-normalized), or
+# -ps.adj --needs rarefaction file="ps.adj.RDS")
+
+```
+
+### Comparison of ASV occupancy by sponge type
+Species rarefiedcount-sums compared between HMA and LMA for ASVs present exclusively in one type or present across species of both types.
+
+####Endemicity by Phylum 
+
+```{r singlehostASVs}
+#need to calc proportion of each bacterial group that contains sponge species specialist
+  #remove env samples
+
+load("06_swadj_results/ps.adj.hostspecies.counts.RDS") #counts summed across samples per species, use to tally up type-endemic ASVs
+
+
+pa2<-prune_samples((!sample_names(ps.adj.hostspecies) %in% c("seawater","sediment")),ps.adj.hostspecies)
+natax<-grep("NA",tax_table(pa2)[,"KPC"])
+    pa1<-prune_taxa(taxa_names(pa2)[natax],pa2) #just the taxa with any NA at K,P,C levels
+    sum(rowSums(otu_table(pa1)))/sum(rowSums(otu_table(pa2)))
+    hist(rowSums(otu_table(pa1))/rowSums(otu_table(pa2)))
+
+keep<-taxa_names(pa2)[!(taxa_names(pa2) %in% taxa_names(pa2)[natax])]
+pa2<-prune_taxa(keep,pa2)
+
+pa2<-prune_taxa(taxa_sums(pa2)>0,pa2)
+  env_only<-length(taxa_names(ps.adj.hostspecies)[!(taxa_names(ps.adj.hostspecies) %in% taxa_names(pa2))])
+
+source("src/taxa_summary.R", local = TRUE)
+findSpecials<-function(psbig,bacgroup){
+  print(bacgroup)
+  if(bacgroup %in% tax_table(psbig)[,"KP"]){
+    mytax<-taxa_names(psbig)[tax_table(psbig)[,"KP"]==bacgroup]
+  }else{mytax<-taxa_names(psbig)[tax_table(psbig)[,"KPC"]==bacgroup]}
+  if (length(mytax)>1){
+  ps<-prune_taxa(mytax,psbig)
+
+  mdt = fast_melt(ps)
+   prevdt = mdt[, list(Prevalence = sum(count > 0), TotalCounts = sum(count)),by = TaxaID]
+   prevdt[(Prevalence == 1), .N] # number of taxa found in only 1 sample
+   specialist_tax<-prevdt[(Prevalence == 1), TaxaID]
+  
+    spdf<-data.frame(otu_table(ps)[,specialist_tax])
+    sphostSp<-c()
+      for (s in specialist_tax){
+      sphostSp<-c(sphostSp,rownames(spdf)[which(spdf[,s]>0)])
+      }
+   names(sphostSp)<-specialist_tax # sphostSp, vector with endemic (single host) ASVs and their host's name
+  return(list(sphostSp,ntaxa(ps)))
+   
+}}
+bacterialgroup<- as.character(unique(c(tax_table(pa2)[,"KP"],tax_table(pa2)[,"KPC"])))
+KPspecial<-sapply(bacterialgroup,function(x) findSpecials(pa2,x))
+names(KPspecial)<-bacterialgroup
+
+SoloHost<-sapply(KPspecial, function(x) length(x[[1]]))
+SoloHost<-SoloHost[SoloHost>0]
+nTax<-sapply(KPspecial[names(SoloHost)], function(x) x[[2]])
+solos<-cbind.data.frame(SoloHost,nTax,bacterialgroup=names(SoloHost))
+solos<-solos %>% mutate(proportion=SoloHost/nTax) #join to dataframe later on
+
+#todo barbell plot solos vs total size
+
+#library(ggalt)
+```
+
+
+```{r,eval=F}
+## Distribution of endemics on sponge tree
+#Todo
+#create htree and ltree from timetr.dob
+#plot tiplabels using KPspecial to show who has specialists
+```
+
+```{r setupeuler}
+psm<-merge_samples(pa2,"RFprediction") #merging rarefied samples
+  phyla<-as.character(unique(tax_table(psm)[,"KP"]))
+```
+```{r euler,eval=T}
+library(eulerr)
+#Each circle indicates how many distinct ASVs are detected in either sponge type.  The extent of overlap indicates how many distinct ASVs can occupy both sponge types. The circles do not represent abundance.
+
+ # for (phylum in phyla){
+#  tmp<-subset_taxa(psm,subset=(Phylum==phylum))
+#  tots<-data.frame(t(otu_table(tmp))) 
+#eulerlist<-list(HMA=rownames(tots[tots$HMA>0,]),
+#                LMA=rownames(tots[tots$LMA>0,]))
+#eplot<-plot(euler(eulerlist),quantities = TRUE,fills = c(hma.col,lma.col),edges=F)
+#gridExtra::grid.arrange(grobs = list(eplot), top = phylum)
+#  }
+
+  tots<-data.frame(t(otu_table(psm))) 
+eulerlist<-list(HMA=rownames(tots[tots$HMA>0,]),
+                LMA=rownames(tots[tots$LMA>0,]))
+eplot<-plot(euler(eulerlist),quantities = TRUE,fills = c(hma.col,lma.col),edges=F)
+```
+
+Each bar segment indicates how many distinct ASVs are detected in either sponge type.  The extent of gray segment indicates how many distinct ASVs can occupy both sponge types. The height does not reflect abundance, simply ASV diversity (richness).
+```{r barplot_tallies}
+ tallyup<-function(psm,phy){
+    #for (phylum in phyla){
+  #tmp<-subset_taxa(psm,subset=(Phylum==phy))
+   mytax<-taxa_names(psm)[tax_table(psm)[,"KP"]==phy]
+  tmp<-prune_taxa(mytax,psm)
+  tots<-data.frame(t(otu_table(tmp))) 
+  HMAonly<-nrow(tots[tots$LMA==0,])
+  LMAonly<-nrow(tots[tots$HMA==0,])
+  both<-nrow(tots)-HMAonly-LMAonly
+  both<-ifelse(both<0,0,both)
+  return(c(phy,HMAonly,LMAonly,both))}
+
+if(!file.exists(paste0(outDir,"ASVs_exclusive_bygroup.rds"))){
+tallies<- lapply(phyla,function(x) tallyup(psm,x))
+dat<-data.frame(matrix(unlist(tallies),byrow=T,ncol=4)); 
+    datp<-cbind.data.frame(dat[,1],t(apply(dat[,2:4],1,function(x) as.numeric(x))))
+  colnames(datp)<-c("Phylum","HMA","LMA","both")
+}else{load(paste0(outDir,"ASVs_exclusive_bygroup.rds"))} #datp, datc
+
+meltdat<-datp %>% select(Phylum,HMA,LMA,both) %>% melt(.,id="Phylum"); #meltdat$value<-as.numeric(as.character(meltdat$value))
+  meltdat$variable<-factor(meltdat$variable,levels=c("HMA","both","LMA"))
+#plot numbers of ASVs by phylum which are restricted to either HMA,LMA or unrestricted
+    ggplot(meltdat, aes(x=Phylum, y=value)) +   
+    geom_bar(aes(fill = variable), stat="identity") + ylab("Number ASV") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +  scale_fill_manual(values=c(hma.col, "gray",lma.col))
+ 
+  #zoom in for less diverse groups
+   ggplot(meltdat, aes(x=Phylum, y=value)) +   
+    geom_bar(aes(fill = variable), stat="identity") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +  scale_fill_manual(values=c(hma.col, "gray",lma.col))  +
+  coord_cartesian(ylim=c(0,2000)) + ylab("Number ASV")
+
+#test whether number of specializing ASV different from generalist   
+wtest<-wilcox.test(as.numeric(c(datp$HMA,datp$LMA)),as.numeric(datp$both))
+
+#test whether number of specializing ASV different between HMA, LMA   
+wtest1<-wilcox.test(as.numeric(datp$LMA),as.numeric(datp$HMA),paired=T)
+
+#%of ASVs exclusive to HMA, LMA, or both
+sums<-colSums(datp[,2:4])
+Hprop<-sums[1]/sum(sums)
+Lprop<-sums[2]/sum(sums)
+Gprop<-sums[3]/sum(sums)
+```
+ Comparing within *phyla*, there are significantly more unique microbes found exclusively in LMA sponges than those limited to HMA (Wilcoxon sign rank V=`r wtest1$statistic`, p= `r wtest1$p.value`), and even fewer who can inhabit both type: `r 100*Gprop`% are flexible, compared with `r 100*Lprop`% endemic to LMA, `r 100*Hprop`% endemic to HMA. The comparison of `r sums[1]` HMA to `r sums[2]` LMA is a `r 100*(sums[2]-sums[1])/sums[1]`% increase.
+ 
+####Endemicity by Class 
+```{r tallyclass}
+ tallyup<-function(psm,phy){
+    #for (phylum in phyla){
+  #tmp<-subset_taxa(psm,subset=(Phylum==phy))
+   mytax<-taxa_names(psm)[tax_table(psm)[,"KPC"]==phy]
+  tmp<-prune_taxa(mytax,psm)
+  tots<-data.frame(t(otu_table(tmp))) 
+  HMAonly<-nrow(tots[tots$LMA==0,])
+  LMAonly<-nrow(tots[tots$HMA==0,])
+  both<-nrow(tots)-HMAonly-LMAonly
+  both<-ifelse(both<0,0,both)
+  return(c(phy,HMAonly,LMAonly,both))}
+
+if(!file.exists("ASVs_exclusive_bygroup.rds")){
+classes<-unique(tax_table(psm)[,"KPC"])
+tallies<- lapply(classes,function(x) tallyup(psm,x))
+dat<-data.frame(matrix(unlist(tallies),byrow=T,ncol=4)); 
+    datc<-cbind.data.frame(dat[,1],t(apply(dat[,2:4],1,function(x) as.numeric(x))))
+  colnames(datc)<-c("Class","HMA","LMA","both")
+
+  
+
+
+datp<-left_join(datp,solos,by=c("Phylum"="bacterialgroup"))
+datc<-left_join(datc,solos,by=c("Class"="bacterialgroup"))
+  
+  save(datp,datc,file=paste0(outDir,"ASVs_exclusive_bygroup.rds"))
+}else{load(paste0(outDir,"ASVs_exclusive_bygroup.rds"))} #datp, datc
+
+meltdat<-datc %>% select(Class,HMA,LMA,both) %>% melt(.,id="Class"); #meltdat$value<-as.numeric(as.character(meltdat$value))
+  meltdat$variable<-factor(meltdat$variable,levels=c("HMA","both","LMA"))
+#plot numbers of ASVs by phylum which are restricted to either HMA,LMA or unrestricted
+    ggplot(meltdat, aes(x=Class, y=value)) +   
+    geom_bar(aes(fill = variable), stat="identity") + ylab("Number ASV") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +  scale_fill_manual(values=c(hma.col, "gray",lma.col))
+ 
+  #zoom in for less diverse groups
+   ggplot(meltdat, aes(x=Class, y=value)) +   
+    geom_bar(aes(fill = variable), stat="identity") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +  scale_fill_manual(values=c(hma.col, "gray",lma.col))  +
+  coord_cartesian(ylim=c(0,750)) + ylab("Number ASV")
+
+#test whether number of specializing ASV different from generalist   
+wtest4<-wilcox.test(as.numeric(c(datc$HMA,datc$LMA)),as.numeric(datc$both))
+
+#test whether number of specializing ASV different between HMA, LMA   
+wtest5<-wilcox.test(as.numeric(datc$LMA),as.numeric(datc$HMA),paired=T)
+
+#%of ASVs exclusive to HMA, LMA, or both
+sums<-colSums(datc[,2:4])
+Hprop<-sums[1]/sum(sums)
+Lprop<-sums[2]/sum(sums)
+Gprop<-sums[3]/sum(sums)
+
+
+
+```
+ Comparing within *classes*, there are significantly more unique microbes found exclusively in LMA sponges than those limited to HMA (Wilcoxon sign rank V=`r wtest5$statistic`, p= `r wtest5$p.value`). And there are significanly fewer ASVs which co-occur in both types (Wilcoxon ranksum W=`r wtest4$statistic`, p= `r wtest4$p.value`)
+ 
+ 
+### Host species (habitat) richness for HMA and LMA-endemic ASVs
+Total numbers of different host species, for ASVs showing endemism to either LMA or HMA type sponges.
+
+```{r range}
+#sponge host SPECIES richness in asvs
+
+  totL<-prune_samples(sample_data(pa2)$RFprediction=="LMA",pa2) #LMA sponge species
+  totH<-prune_samples(sample_data(pa2)$RFprediction=="HMA",pa2) #HMA sponge species
+  HMAtx<-prune_taxa(taxa_sums(totH)>0,totH) #all the taxa found across HMAs sampled
+  LMAtx<-prune_taxa(taxa_sums(totL)>0,totL)
+
+#type-endemics
+  HMAonly<-prune_taxa(taxa_names(HMAtx)[!(taxa_names(HMAtx) %in% taxa_names(LMAtx))],HMAtx) #taxa found only in HMAs
+  LMAonly<-prune_taxa(taxa_names(LMAtx)[!(taxa_names(LMAtx) %in% taxa_names(HMAtx))],LMAtx)
+  ntaxa(HMAtx);ntaxa(LMAtx)
+   ntaxa(HMAonly);ntaxa(LMAonly)
+  shared<-length(intersect(taxa_names(LMAtx),taxa_names(HMAtx)))
+#verify:
+  ntaxa(HMAonly)+ shared ==ntaxa(HMAtx)
+  ntaxa(LMAonly)+ shared ==ntaxa(LMAtx)
+  ntaxa(pa2)== ntaxa(HMAonly)+ shared +ntaxa(LMAonly) 
+ 
+  #proportions for type-endemics
+  LMAra<-transform_sample_counts(LMAonly, function(x) x / sum(x)) #proportioanal abundance for ASVs only in LMAs
+  HMAra<-transform_sample_counts(HMAonly, function(x) x / sum(x)) #to account for different sampling effort, if using abundance based diversity index
+
+  lS.ASV <- apply(otu_table(LMAra)>0,2,sum) # S = total number of host species with non-zero occurence of an ASV
+  hS.ASV <- apply(otu_table(HMAra)>0,2,sum) # S = total number of host species 
+
+cat("mean S.ASV for HMA"); mean(hS.ASV)
+cat("mean S.ASV for LMA"); mean(lS.ASV)
+hist(lS.ASV,col=lma.col,breaks=40,main="Number of species occupied by an ASV (rarefied)",xlab="Sponge species inhabited");hist(hS.ASV,add=T,col=hma.col,breaks=40)
+
+wtest3<-wilcox.test(hS.ASV,lS.ASV)
+
+#calc how many ASVs occur solely within a species..do HMA sponges have more than LMA sponges?
+lsolo<-length(lS.ASV[lS.ASV==1])
+ltot<-length(lS.ASV)
+#lsolo/ltot
+hsolo<-length(hS.ASV[hS.ASV==1])
+htot<-length(hS.ASV)
+#hsolo/htot
+x2<-chisq.test(matrix(c(hsolo,htot,lsolo,ltot),ncol=2))
+
+  tots<-data.frame(t(otu_table(psm))) 
+  Lsolos<-rownames(tots)[rownames(tots) %in% names(lS.ASV)[lS.ASV==1]]
+    Hsolos<-rownames(tots)[rownames(tots) %in% names(hS.ASV)[hS.ASV==1]]
+eulerlist<-list(HMA=rownames(tots[tots$HMA>0,]),
+                LMA=rownames(tots[tots$LMA>0,]),
+                singleL=Lsolos,
+                singleH=Hsolos)
+eplot<-plot(euler(eulerlist,shape="ellipse"),quantities = TRUE,fills = c(hma.col,lma.col,lsol.col,hsol.col),edges=F)
+eplot
+
+#compare endemics to ASVs which occur in both types
+gentax<-intersect(taxa_names(totL),taxa_names(totH))
+genps<-prune_taxa(gentax,pa2)
+gS.ASV <- apply(otu_table(genps)>0,2,sum)
+
+wtest3b<-wilcox.test(c(hS.ASV,lS.ASV),gS.ASV)
+mean(lS.ASV)
+mean(hS.ASV)
+```
+Among endemic-microbes:LMA-endemics occupy on average `r mean(lS.ASV)` LMA sponges compared with `r mean(hS.ASV)` HMAs in their sponges. This small difference (the average number of host species per LMA ASV is `r 100*(mean(lS.ASV)-mean(hS.ASV))/mean(hS.ASV)`% greater than an HMA ASV) is still highly significant (Wilcoxon rank sum, W= `r wtest3$statistic` p= `r wtest3$p.value`).
+
+xMA-endemic show greater host-endemism compared with generalists: 
+Number of hosts, mean for LMA, `r mean(hS.ASV)` 
+Number of hosts, mean for LMA, `r mean(lS.ASV)` 
+Number of hosts, mean for xMA, `r mean(c(mean(lS.ASV),mean(hS.ASV)))` 
+Number of hosts, mean for generalist, `r mean(gS.ASV)` 
+(Wilcoxon rank sum, W= `r wtest3b$statistic` p= `r wtest3b$p.value`).
+
+
+HMA-endemics are more likely to occur in a single sponge species, with `r 100*hsolo/htot`% of HMA-endemics found in a single species compared with `r 100*lsolo/ltot`% of LMA-endemics. Significance: $\chi$^2^ = `r x2$statistic`,df=`r x2$parameter`, p =`r x2$p.value`.
+
+```{r asvjitter}
+#hS.ASV
+#lS.ASV
+#gS.ASV
+asvS.df<-cbind.data.frame(numhost=c(hS.ASV,lS.ASV,gS.ASV),
+                    type=c(rep("HMAendemic",length(hS.ASV)), rep("LMAendemic",length(lS.ASV)),rep("generalist",length(gS.ASV))))
+#jitter plot3: L H both asv types, y=Number sponge hosts
+gp<-ggplot(asvS.df, aes(x=type, y=numhost)) + 
+  geom_jitter(aes(color=type),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c("gray",hma.col,lma.col))
+gp
+```
+
+### ASV richness in HMA and LMA sponges
+
+Individual samples used for richness calculation, then averaged for HMA,LMA comparison.
+```{r setupdata}
+load("06_swadj_results/ps.adj.RDS")
+load("03_char_results/species_charsRF.Rds") #use char$consensusRF_phyla
+load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #timetr #treemeta.u
+#species phylo-ordered
+tmp<-otu_table(ps.adj)
+otu_table(ps.adj)<-otu_table(round(tmp),taxa_are_rows = F)
+
+timetr.dob<-keep.tip(timetr,tip=timetr$tip.label [timetr$tip.label %in% sample_data(ps.adj)$Species_consensus])
+p<-ggtree::ggtree(timetr.dob,right=T)
+Species.order<-c(ggtree::get_taxa_name(p),"seawater","sediment")
+
+keep<-sample_names(ps.adj)[sample_data(ps.adj)$Species_consensus %in% Species.order]
+ps.adj<-prune_samples(keep,ps.adj)
+sample_data(ps.adj)$Species_consensus<- factor(sample_data(ps.adj)$Species_consensus, levels = Species.order)
+dat1<-data.frame(sample_data(ps.adj))
+rnams<-rownames(dat1)
+
+
+dat2<-left_join(dat1,char, by=c("Species_consensus"))
+dat2<-dat2 %>% select(Species_consensus,consensusmod,consensusRF_asv,consensusRF_class,consensusRF_phyla)
+dat2$RFprediction<-dat2$consensusRF_phyla
+dat3<-left_join(dat2,treemeta.u); rownames(dat3)<-rnams
+sample_data(ps.adj)<-dat3
+set.seed(1234)
+ps.adjR<-rarefy_even_depth(ps.adj,sample.size = 8000) #only lose 15 samples no species lost
+ps.adjR<-prune_taxa(taxa_sums(ps.adjR)>0,ps.adjR)
+ps.adjR<-prune_samples(sample_sums(ps.adjR)>0,ps.adjR)
+
+
+
+```
+
+#ASV richness in sponge SAMPLES
+```{r richness}
+
+  totL<-prune_samples(sample_data(ps.adjR)$RFprediction=="LMA",ps.adjR) #LMA sponge SAMPLES
+  totH<-prune_samples(sample_data(ps.adjR)$RFprediction=="HMA",ps.adjR) #HMA sponge SAMPLES
+  HMAtx<-prune_taxa(taxa_sums(totH)>0,totH) #all the taxa found across HMAs sampled
+  LMAtx<-prune_taxa(taxa_sums(totL)>0,totL)
+
+#type-endemics
+  HMAonly<-prune_taxa(taxa_names(HMAtx)[!(taxa_names(HMAtx) %in% taxa_names(LMAtx))],HMAtx) #taxa found only in HMAs
+  LMAonly<-prune_taxa(taxa_names(LMAtx)[!(taxa_names(LMAtx) %in% taxa_names(HMAtx))],LMAtx)
+  LMAra<-transform_sample_counts(LMAonly, function(x) x / sum(x+1)) #proportional abundance for ASVs only in LMAs
+  HMAra<-transform_sample_counts(HMAonly, function(x) x / sum(x+1)) #to account for different sampling effort, if using 
+    #run species/order richeness on HMAonly and LMAonly
+  HMAcum<-sample_sums(HMAonly)/sample_sums(HMAtx)
+    LMAcum<-sample_sums(LMAonly)/sample_sums(LMAtx)
+#testing proportion of endemics between sponge types
+wtest1b<-wilcox.test(HMAcum,LMAcum)
+    
+lS.sponge <- apply(otu_table(LMAtx)>0,1,sum) # S = total number of unique ASVs with any abundance in a LMA sponge SAMPLE
+lS.sponge2 <- apply(otu_table(LMAra)>0,1,sum)
+hS.sponge <- apply(otu_table(HMAtx)>0,1,sum) # S = total number of unique ASVs with any abundance in a HMA sponge SAMPLE
+hS.sponge2 <- apply(otu_table(HMAra)>0,1,sum)
+mean(hS.sponge); mean(hS.sponge2,na.rm=T)
+
+mean(hS.sponge2/hS.sponge)
+mean(lS.sponge);  mean(lS.sponge2)
+mean(lS.sponge2/lS.sponge,na.rm=T)
+
+hist(lS.sponge,col=lma.col,breaks=40,main="Richness: number of ASVs detected in a sponge SAMPLE (rarefied)", xlab="Number unique microbes per SAMPLE");hist(hS.sponge,add=T,col=hma.col,breaks=20)
+
+#testing alpha diversity between sponge types
+wtest2a<-wilcox.test(hS.sponge,lS.sponge)
+#testing proportion of endemics between sponge types
+wtest2<-wilcox.test(hS.sponge2/hS.sponge,lS.sponge2/lS.sponge)
+
+#todo plot manually: barbell plot: endemics and total ASV number across the species
+
+
+
+spongS.df<-cbind.data.frame(numASV=c(hS.sponge,lS.sponge),
+                    sponge_host=c(rep("HMA",length(hS.sponge)), rep("LMA",length(lS.sponge))))
+
+#jitter plot1: L H sponges, y=Number ASVs
+
+gp<-ggplot(spongS.df, aes(x=sponge_host, y=numASV)) + 
+  geom_jitter(aes(color=sponge_host),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col))
+
+gp
+
+```
+```{r,eval=F}
+#this creates averging artifacts when merging, skewing richness estimates
+#averaged ASV counts for species to plot+calc richness at species-level
+avgOTUvals<-function(ps){
+  Lsp <- factor(sample_data(ps)$Species_consensus)
+mean_counts <- sapply(levels(Lsp),function(i){
+  round(colMeans(otu_table(ps)[Lsp==i,]))}) # if taxa are rows: then rowMeans and move ,
+psA<-merge_samples(ps,"Species_consensus")
+otu_table(psA)<-otu_table(t(mean_counts),taxa_are_rows = F)
+return(psA)
+}
+
+#LMAm<-avgOTUvals(LMAonly)
+#HMAm<-avgOTUvals(HMAonly)
+#LMAma<-avgOTUvals(LMAtx)
+#HMAma<-avgOTUvals(HMAtx)
+
+#plot_richness(LMAm,measures = "Observed") + xlab("LMA sponge species") + ylab("Number of LMA-endemic ASVs")
+#plot_richness(HMAm,measures = "Observed") + xlab("HMA sponge species") + ylab("Number of HMA-endemic ASVs")
+#plot_richness(LMAma,measures = "Observed") + xlab("LMA sponge species") + ylab("Number of ASVs, avg")
+#plot_richness(HMAma,measures = "Observed") + xlab("HMA sponge species") + ylab("Number of ASVs, avg")
+
+#mean( apply(otu_table(LMAm)>0,1,sum))
+#mean( apply(otu_table(LMAma)>0,1,sum))
+#mean( apply(otu_table(HMAm)>0,1,sum))
+#mean( apply(otu_table(HMAma)>0,1,sum))
+
+
+```
+HMA sponges harbor an average of `r mean(hS.sponge2)` HMA-endemic microbes, which is `r mean(hS.sponge2/hS.sponge)*100`%) of their ASV richness.
+
+LMA harbor `r mean(lS.sponge2) ` LMA-endemics, which is `r mean(lS.sponge2/lS.sponge)*100`%) of their ASV richness. Significance: (Wilcoxon rank sum, W= `r wtest2a$statistic` p= `r wtest2a$p.value`).
+
+The proportion of endemics found is LMA is significantly higher than HMA (Wilcoxon rank sum, W= `r wtest2$statistic` p= `r wtest2$p.value`).
+
+The average proportion of the total microbe abundance comprised of xMA-endemics is:
+
+* in LMAs: `r mean(LMAcum)*100`%
+* in HMAs: `r mean(HMAcum)*100`%
+Significance: Wilcoxon ranksum W=`r wtest1b$statistic` p= `r wtest1b$p.value`
+
+
+```{r shannondiv}
+#to do: repeat for HMA LMA
+#calc H' shannon-wiener(abundance-informed richness): increases with both evenness and richness, so difficult to compare comm that differ in richness
+library(vegan)
+lH.sponge <- apply(otu_table(LMAtx),1,vegan::diversity) # H = diversity of ASVs in a sponge species
+  lH.sponge2 <- apply(otu_table(LMAra),1,vegan::diversity) # LMA endemics diversity in a host
+lH.ASV <- apply(otu_table(LMAra),2,vegan::diversity) # H= diversity of hosts for an ASV
+
+ hH.sponge <- apply(otu_table(HMAtx),1,vegan::diversity) # H = diversity of ASVs in a sponge species
+ hH.sponge2 <- apply(otu_table(HMAra),1,vegan::diversity) # HMA endemics diversity in a host
+hH.ASV <- apply(otu_table(HMAra),2,vegan::diversity) # H= diversity of hosts for an ASV
+mean(hH.sponge); mean(hH.sponge2/hH.sponge,na.rm=T)
+mean(lH.sponge); mean(lH.sponge2/lH.sponge,na.rm=T)
+hist(lH.sponge,col=lma.col,breaks=40,main="Range of ASV richness detected across sponge species (rarefied)", xlab="Shannon diversity");hist(hH.sponge,add=T,col=hma.col,breaks=20)
+
+plot_richness(LMAonly,measures = "Shannon") + xlab("LMA sponge species") + ylab("Shannon H of LMA-endemic ASVs")
+plot_richness(HMAonly,measures = "Shannon") + xlab("HMA sponge species") + ylab("Shannon H of HMA-endemic ASVs")
+#todo summarize to species
+
+#testing alpha diversity between sponge types
+wtest6<-wilcox.test(hH.sponge,lH.sponge)
+#testing alpha diversity of  endemics between sponge types
+wtest7<-wilcox.test(hH.sponge2,lH.sponge2)
+
+mean(hH.ASV)
+mean(lH.ASV)
+hist(lH.ASV,col=lma.col,breaks=40,main="Shannon diversity of host habitats per ASV (rarefied)",xlab="Diversity of sponge host habitats (H)");hist(hH.ASV,add=T,col=hma.col,breaks=40)
+
+wtest8<-wilcox.test(hH.ASV,lH.ASV)
+
+#jitter plot2: L H sponges, y=Shannon's diversity H
+
+spongH.df<-cbind.data.frame(H=c(hH.sponge,lH.sponge),
+                    sponge_host=c(rep("HMA",length(hH.sponge)), rep("LMA",length(lH.sponge))))
+gp<-ggplot(spongH.df, aes(x=sponge_host, y=H)) + 
+  geom_jitter(aes(color=sponge_host),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col))
+
+gp
+#jitter plot3: L H sponges, y=Shannon's eveness (H/N)
+
+heH<-hH.sponge/log(hS.sponge)
+leH<-lH.sponge/log(lS.sponge)
+
+spong_eH.df<-cbind.data.frame(evenness_H=c(heH,leH),
+                    sponge_host=c(rep("HMA",length(heH)), rep("LMA",length(leH))))
+gp<-ggplot(spong_eH.df, aes(x=sponge_host, y=evenness_H)) + 
+  geom_jitter(aes(color=sponge_host),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col))
+
+gp
+```
+In terms of **Shannon diversity** (accounts for abundance and evenness):
+
+HMA sponges average Shannon's index: 
+
+* Overall diversity: `r mean(hH.sponge)`
+* HMA-endemic microbes: `r mean(hH.sponge2)` 
+
+LMA sponges average Shannon's index: 
+
+* Overall diversity: `r mean(lH.sponge)`
+* LMA-endemic microbes: `r mean(lH.sponge2)` 
+
+Significantly different overall diversity (Wilcoxon rank sum, W= `r wtest6$statistic` p= `r wtest6$p.value`).
+
+Significant diversity differences between type-endemics (Wilcoxon rank sum, W= `r wtest7$statistic` p= `r wtest7$p.value`).
+
+Among endemic-microbes:
+
+LMA-endemics have an average host diversity of H=`r mean(lH.ASV)` compared with `r mean(hH.ASV)` for HMAs.  Significant (Wilcoxon rank sum, W= `r wtest8$statistic` p= `r wtest8$p.value`).
+
+
+
+```{r,eval=F}
+
+#leftover old bits..see if need to re integrate
+
+
+# need to load in HMA/LMA microbe predictions...
+load("03_char_results/RFimportance_phyla.Rds")  #loads 'imp.phy' with importance scores for how predictive each phylum is for HMA or LMA classification
+load("03_char_results/RFimportance_class.Rds")
+imps<-rbind(imp.phy,imp.cl)
+
+#set cutoff for importance, MeanDecreaseAccuracy >=2 to eliminate less/non predictive taxa
+imps<-imps[imps$MeanDecreaseAccuracy>=0,]
+#order: HMA (strongest to weakest) then LMA (weakest to strongest)
+
+#ord:
+negAcc<-imps$MeanDecreaseAccuracy*-1
+imps<-cbind.data.frame(imps,negAcc)
+AccOrder<-apply(imps,1, function(x) ifelse(x["enrichedIn"]=="LMA",x["negAcc"],x["MeanDecreaseAccuracy"]))
+imps<-cbind.data.frame(imps,AccOrder,stringsAsFactors=F)
+imps<-imps[rev(order(as.numeric(imps$AccOrder))),]
+
+
+
+
+imps$X<-rownames(imps)
+out.df$X<-rownames(out.df)
+imps.div<-inner_join(imps,out.df,by="X")
+
+hmapoints<-imps.div[imps.div$enrichedIn=="HMA",]
+lmapoints<-imps.div[imps.div$enrichedIn=="LMA",]
+plot(hmapoints$N,hmapoints$MeanDecreaseAccuracy,col=hma.col,pch=16,ylim=range(imps.div$MeanDecreaseAccuracy),xlim=range(imps.div$N),ylab="RF importance score",xlab="Habitat richness N (mean number sponge species per ASV)")
+points(lmapoints$N,lmapoints$MeanDecreaseAccuracy,col=lma.col,pch=16)
+title("Phyla: Host richness vs RF Importance score")
+text(lmapoints$N,lmapoints$MeanDecreaseAccuracy,col=lma.col,label=lmapoints$X,cex=0.5)
+text(hmapoints$N,hmapoints$MeanDecreaseAccuracy,col=hma.col,label=hmapoints$X,cex=0.5)
+#legend("topleft",legend=c(round(cor(hmapoints$N,hmapoints$MeanDecreaseAccuracy)),round(cor(lmapoints$N,lmapoints$MeanDecreaseAccuracy))),col=c(hma.col,lma.col))
+
+
+plot(hmapoints$H,hmapoints$MeanDecreaseAccuracy,col=hma.col,pch=16,ylim=range(imps.div$MeanDecreaseAccuracy),xlim=range(imps.div$H),ylab="RF importance score",xlab="Shannon's H")
+points(lmapoints$H,lmapoints$MeanDecreaseAccuracy,col=lma.col,pch=16)
+title("Phyla: Shannon evenness in habitat vs RF Importance score")
+
+#test if 
+cat("t test for difference in alpha diversities between HMA-LMA")
+t.test(imps.div$H ~ imps.div$enrichedIn)
+t.test(imps.div$N ~ imps.div$enrichedIn)
+#t.test(imps.div$p ~ imps.div$enrichedIn) #todo why is Bacteria_Acidobacteria p value ==Inf??
+
+#jitter plot of N, H, D
+
+#gp<-ggplot(imps.div, aes(x=enrichedIn, y=N)) +   geom_jitter(position=position_jitter(0.2), cex=1.2)
+mimps<-imps.div[,c("X","enrichedIn","N","D","H")]
+mimps<-reshape2::melt(mimps)
+gp<-ggplot(mimps, aes(x=enrichedIn, y=value)) + facet_wrap(~variable,scales="free") +
+  geom_jitter(aes(color=enrichedIn),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col))
+
+gp
+
+
+#plot number of habitats (= host species + environments occupied) jitter plot by Phylum, like done for host order
+mimpsN<-mimps[mimps$variable=="N",]
+gp<-ggplot(mimpsN, aes(x=X, y=value)) + facet_wrap(~enrichedIn,scales="free_x") +
+  geom_jitter(aes(color=enrichedIn),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col))
+
+gp
+
+imps.div<-inner_join(imps,prop.spec,by="X")
+
+# hmapoints<-imps.div[imps.div$enrichedIn=="HMA",]
+# lmapoints<-imps.div[imps.div$enrichedIn=="LMA",]
+# plot(hmapoints$proportion,hmapoints$MeanDecreaseAccuracy,col=hma.col,pch=16,ylim=range(imps.div$MeanDecreaseAccuracy),xlim=range(imps.div$proportion),ylab="RF importance score",xlab="Proportion of ASVs specialized to single Host Order")
+# points(lmapoints$proportion,lmapoints$MeanDecreaseAccuracy,col=lma.col,pch=16)
+# title("Phyla: Host richness vs RF Importance score")
+# text(lmapoints$proportion,lmapoints$MeanDecreaseAccuracy,col=lma.col,label=lmapoints$X,cex=0.5)
+# text(hmapoints$proportion,hmapoints$MeanDecreaseAccuracy,col=hma.col,label=hmapoints$X,cex=0.5)
+#legend("topleft",legend=c(round(cor(hmapoints$N,hmapoints$MeanDecreaseAccuracy)),round(cor(lmapoints$N,lmapoints$MeanDecreaseAccuracy))),col=c(hma.col,lma.col))
+
+
+#t.test(imps.div$p ~ imps.div$enrichedIn) #todo why is Bacteria_Acidobacteria p value ==Inf??
+
+#jitter plot of N, H, D
+
+#gp<-ggplot(imps.div, aes(x=enrichedIn, y=N)) +   geom_jitter(position=position_jitter(0.2), cex=1.2)
+mimps<-imps.div[,c("X","enrichedIn","proportion")]
+mimps<-reshape2::melt(mimps)
+gp<-ggplot(mimps, aes(x=enrichedIn, y=value)) + facet_wrap(~variable,scales="free") +
+  geom_jitter(aes(color=enrichedIn),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col))
+
+gp +ggtitle("Proportion of phyla comprised of host-specialists") +ggrepel::geom_text_repel(label=mimps$X,size=2)
+t.test(imps.div$proportion ~ imps.div$enrichedIn)
+
+mdf<-reshape2::melt(numhostspp)
+mdf2<-inner_join(x=mdf,y=imps,by=c("L1"="X"))
+
+gp<-ggplot(mdf2, aes(x=L1, y=value)) + facet_wrap(~enrichedIn,scales="free") +
+  geom_jitter(aes(color=enrichedIn),position=position_jitter(0.2), cex=1.2) + scale_color_manual(values=c(hma.col,lma.col)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+gp
+t.test(mdf2$value ~ mdf2$enrichedIn) #todo why is Bacteria_Acidobacteria p value ==Inf??
+summary(aov(mdf2$value ~ mdf2$enrichedIn +mdf2$L1))
+
+# H1 results:
+#-HMAs inhabit more host species,environemnts on average than LMAs (are less specialized, retricted)
+
+#next: determine if higher habitat range in HMA microbes is limited to closely related hosts?
+
+#H2: HMA ASVs inhabit fewer orders of hosts than LMAs, because co-evolving within clades of closely-relateds hosts. There is lability to colonize more species, when closely related.
+
+```

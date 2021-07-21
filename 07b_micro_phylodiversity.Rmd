@@ -1,0 +1,421 @@
+---
+title: "Microbial symbiont diversification"
+output: 
+  html_document:
+  toc: true
+toc_float: true
+collapsed: false
+toc_depth: 4
+df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,fig.width = 8, results="markdown")
+options(scipen = 999)
+```
+
+```{r setup2}
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"07_divresults/"
+dir.exists(file.path(mainDir, outDir))
+library(phyloseq,warn.conflicts = FALSE)
+library(ape,warn.conflicts = FALSE)
+library(colorspace)
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+library(vegan)
+
+library(ggplot2)
+library(ggtree,warn.conflicts = FALSE)
+options(getClass.msg=FALSE)
+
+
+#input: 
+# sw-corrected relative abundance phyloseq
+# RFimportance_phyla.Rds"  #loads 'imp.phy' with importance scores for how predictive each phylum is for HMA or LMA classification
+# RFimportance_class.Rds"
+load(file="06_swadj_results/ps.adj.hostspecies.ra.RDS")  # ps.adj.hostspecies.ra
+psa<-ps.adj.hostspecies.ra
+psa<-prune_taxa(taxa_sums(psa)>0,psa)
+load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #timetr
+#species phylo-ordered
+timetr.dob<-keep.tip(timetr,tip=timetr$tip.label [timetr$tip.label %in% sample_names(psa)])
+p<-ggtree::ggtree(timetr.dob,right=T)
+Species.order<-c(ggtree::get_taxa_name(p),"seawater","sediment")
+
+
+sample_data(psa)$phyloOrder %in% names(cladecols)
+cladecols<-cladecols[names(cladecols) %in% sample_data(psa)$phyloOrder]
+
+treemeta.u<-treemeta.u[treemeta.u$Species_consensus %in% timetr.dob$tip.label,]
+treemeta.u$species_color<-cladecols[match(treemeta.u$phyloOrder,names(cladecols)) ] 
+  
+sample_data(psa)$phyloOrder[sample_data(psa)$Species_consensus=="seawater"]<-"seawater"
+sample_data(psa)$phyloOrder[sample_data(psa)$Species_consensus=="sediment"]<-"sediment"
+
+sample_data(psa)$phyloOrder<-factor(sample_data(psa)$phyloOrder,levels=c(names(cladecols),"seawater","sediment"))
+env_cladecols<-c(cladecols,"gray","black"); names(env_cladecols)<-c(names(cladecols),"seawater","sediment")
+```
+
+```{r setupdata_forrichness}
+load("06_swadj_results/ps.adj.RDS")
+load("03_char_results/species_charsRF.Rds") #use char$consensusRF_phyla
+#species phylo-ordered
+tmp<-otu_table(ps.adj)
+#otu_table(ps.adj)<-otu_table(round(tmp),taxa_are_rows = F)
+
+keep<-sample_names(ps.adj)[sample_data(ps.adj)$Species_consensus %in% Species.order]
+ps.adj<-prune_samples(keep,ps.adj)
+sample_data(ps.adj)$Species_consensus<- factor(sample_data(ps.adj)$Species_consensus, levels = Species.order)
+dat1<-data.frame(sample_data(ps.adj))
+rnams<-rownames(dat1)
+library(dplyr)
+dat2<-left_join(dat1,char, by=c("Species_consensus"))
+dat2<-dat2 %>% select(Species_consensus,consensusmod,consensusRF_asv,consensusRF_class,consensusRF_phyla)
+dat2$RFprediction<-dat2$consensusRF_phyla
+dat3<-left_join(dat2,treemeta.u); rownames(dat3)<-rnams
+sample_data(ps.adj)<-dat3
+set.seed(1234)
+ps.adjR<-rarefy_even_depth(ps.adj,sample.size = 8000)
+ps.adjR<-prune_taxa(taxa_sums(ps.adjR)>0,ps.adjR)
+ps.adjR<-prune_samples(sample_sums(ps.adjR)>0,ps.adjR)
+
+
+#use ps.adjR to calc per-sample richness, then average
+```
+##Calculating richness and evenness
+For sponges, calculate alpha diversities of symbionts for each species
+For microbes, calcuate alpha diversities of host habitats for each ASV
+
+- Total N: absolute richness
+- Shannon-Weiner H' (abundance-informed richness): increases with both evenness and richness, so difficult to compare comm that differ in richness
+- Simpson's D(evenness/dominance): less sensitive to richness (as D increases to 1, diversity decreases (ie monoculture); 1-D: higher means more diverse)
+- Pielou evenness (ratio of diversity index to maximum possible diversity)
+```{r calcSHD}
+
+### H1: Specialized ASVs more often found in HMA sponges.
+
+# 1. calc 'specialist index' for each ASV, 
+# -visual:map these values, and host species, to bacterial trees...is this a phylogenetically conserved 'trait'? 
+# ie, what is the phylogenetic signal for being specialist/generalist?
+# - 
+  # Are any types of microbes more specialized overall?
+# -compare mean specialization between HMA and LMAs, consider indep constrasts to account for phylogeny.
+  # are ASVs in HMA sponges characterized by lower mean richness, H,D,evenness than the ASVs of LMAs?
+
+#get averages to plot for tree
+spec <- factor(sample_data(ps.adjR)$Species_consensus)
+  #sponge sample richness
+  #number ASVs per SAMPLE, then average for species
+  S.samp <- apply(otu_table(ps.adjR)>0,1,sum) # S = total number of ASVs with non-zero abundance in a xMA sponge SAMPLE
+  S.sponge <- sapply(levels(spec),function(i){mean(S.samp[spec==i])}) #species average richness
+  shannons.samp<-apply(otu_table(ps.adjR),1,vegan::diversity)
+  shannons.sponge<- sapply(levels(spec),function(i){ mean(shannons.samp[spec==i])}) #species average
+  plot(S.sponge,shannons.sponge) ;title("Sponge: ASV Richness vs Shannon's H index")
+  simpsons.samp<-apply(otu_table(ps.adjR),1, FUN=function(x) vegan::diversity(x,index="simpson")) #returns 1-D
+  simpsons.sponge<-sapply(levels(spec),function(i){ mean(simpsons.samp[spec==i])}) #species average
+  plot(S.sponge,simpsons.sponge); title("Sponge: ASV Richness vs Simpsons's D index")
+  pielousH.samp<-shannons.samp/log(S.samp)
+  pielousH.sponge<- sapply(levels(spec),function(i){ mean(pielousH.samp[spec==i])})
+  plot(S.sponge,pielousH.sponge); title("Sponge: ASV Richness vs Pielou's evenness using H")
+  pielousD.samp<-simpsons.samp/log(S.samp)
+    pielousD.sponge<-sapply(levels(spec),function(i){ mean(pielousD.samp[spec==i])})
+  plot(S.sponge,pielousD.sponge); title("Sponge: ASV Richness vs Pielou's evenness using D")
+  plot(pielousH.sponge,pielousD.sponge); title("Sponge: Pielou's evenness using H vs using D")
+
+  
+  
+  #ASV host habitat richness
+  #number host SPECIES per asv (use species merged-counts)
+  S.ASV <- apply(otu_table(psa)>0,2,sum) # S = total number of host species with non-zero occurence of an ASV
+  shannons.ASV<-apply(otu_table(psa),2,vegan::diversity)
+  plot(S.ASV,shannons.ASV); title("ASV: Host Richness vs Shannon's H index")
+  simpsons.ASV<-apply(otu_table(psa),2, FUN=function(x) vegan::diversity(x,index="simpson")) #returns 1-D
+  plot(S.ASV,simpsons.ASV); title("ASV: Host Richness vs Simpsons's D index")
+  pielousH.ASVs<-shannons.ASV/log(S.ASV+1)  #add 1 to prevent NaN when S.ASV is only 1 host (log(1)=0)
+  plot(S.ASV,pielousH.ASVs); title("ASV: Host Richness vs Pielou's evenness using H")
+  pielousD.ASVs<-simpsons.ASV/log(S.ASV+1)
+  plot(pielousH.ASVs,pielousD.ASVs)
+  title("ASV: Pielou's evenness using H vs using D")
+
+  plot(S.ASV,pielousD.ASVs)
+  title("ASV: Host Richness vs Pielou's evenness using D")
+
+#Simpsons values less weighted by high richness values.
+
+  
+  
+#calc H' shannon-weiner(abundance-informed richness): increases with both evenness and richness, so difficult to compare comm that differ in richness
+#less sensitive to higher richness
+
+#calc D Simpson(evenness/dominance): less sensitive to richness (as D increases to 1, diversity decreases (ie monoculture); 1-D: higher means more diverse)
+#not well related
+#very non linear
+
+#calc Pielou evenness (ratio of diversity index to maximum possible diversity)
+
+
+
+
+#skip Pielous and Simpsons
+```
+
+##Phylogenetic signal of alpha diversities in microbe trees
+Omitting Simpsons and Pielous since they highly upweight low-abundances.
+Maps metrics to ASV tips and calcuates Pagel's $\lambda for each metric.
+Maps hosts occupied (and abundance therein) to each ASV tip. Plots saved to `07_divresults` folder.
+```{r}
+#map values onto ASV trees:
+#tree=tr;ps=psa; richness=S.ASV; shannons=shannons.ASV;  treetitle=title
+calc_div_signal<-function(tree, ps, richness,shannons,simpsons, pielous,treetitle){
+  tree<-keep.tip(tree,tip=tree$tip.label[tree$tip.label %in% taxa_names(ps)])
+ 
+   if(Ntip(tree)>2){
+     ps<-prune_taxa(tree$tip.label,ps)
+     ps<-merge_phyloseq(sample_data(ps),tax_table(ps),otu_table(ps),tree)
+     
+  N<-richness[names(richness) %in% tree$tip.label]
+  H<-shannons[names(shannons) %in% tree$tip.label]
+
+  div.df<-cbind.data.frame(names(N),N,H)
+  mean_divs<-apply(div.df[,2:3],2,FUN= function(x) mean(x,na.rm=T))
+
+    if(sum(sample_sums(ps)[!(sample_names(ps) %in% c("seawater","sediment"))])>0){
+  sample_data(ps)$Species_consensus<-factor(sample_names(ps),levels=Species.order)
+ 
+  #subset phyloORder colors needed
+  coltmp<-cladecols[names(cladecols) %in% sample_data(ps)$phyloOrder]
+  #plot host occurence across ASV tips, colored by phyloegenetic clade
+  pt<-plot_tree(ps,size="abundance",color="phyloOrder",label.tips = "taxa_names") + scale_color_manual(values=c(coltmp,"gray","black"))
+  pt.asv<-pt + theme(legend.position="none") +  ggtitle(treetitle) 
+  
+  legend <- cowplot::get_legend(pt ); leg<-cowplot::ggdraw(legend)
+  pt.heat<-plot_heatmap(ps,taxa.order=tree$tip.label,sample.order=Species.order)
+  
+  #plot sponge type(high or low MA) across ASV tips
+  pt<-plot_tree(ps,color="RFprediction",label.tips = "taxa_names") + scale_color_manual(values=c(hma.col,lma.col,"gray","black"))
+  pt.asvRF<-pt + ggtitle(treetitle) 
+  
+  #set up ASV tree
+  pt<-ggtree(phy_tree(ps)) + geom_tiplab(size=1,align=F)
+  
+  
+  #plot observed habitat richness across ASV tips and calc signal (lambda) 
+  p4d.N<-phylobase::phylo4d(phy_tree(ps), tip.data=div.df$N)
+  lambda.N<-as.character(round(phylosignal::phyloSignal(p4d.N,methods="Lambda")$stat,3))
+  
+  pt.N<-pt %<+% div.df + geom_tippoint(aes(color=N),size=2) + theme_tree2() + scale_color_continuous(high='#D55E00',low='#0072B2')  +
+    theme(legend.position="right") +ggtitle(paste0(treetitle," (Observed richness of host habitat')")) 
+   pt.N<-pt.N + annotate("text",x=1,y=5,label=paste0("Lambda: ",lambda.N)) 
+   
+  #plot shannon evenness  and its phylo signal (lambda) across ASV tips
+  p4d.H<-phylobase::phylo4d(phy_tree(ps), tip.data=div.df$H)
+  lambda.H<-as.character(round(phylosignal::phyloSignal(p4d.H,methods="Lambda")$stat,3))
+  pt.H<-pt %<+% div.df + geom_tippoint(aes(color=H),size=2) + theme_tree2() + scale_color_continuous(high='#D55E00',low='#0072B2')  +
+    theme(legend.position="right") + ggtitle(paste0(treetitle," (Shannon evenness)")) 
+  pt.H<-pt.H + annotate("text",x=1,y=5,label=paste0("Lambda: ",lambda.H))
+ 
+ 
+
+    
+  return(list(mean_divs,pt.asv,leg,pt.heat,pt.asvRF,pt.N,pt.H))
+     }else{return(list(mean_divs))}
+     }}
+
+# [[1]]mean_divs, averaged alpha diversity scores
+# [[2]]pt.asv, ASV tree plotted with abundances in hosts colored by host order
+# [[3leg, legend
+# [[4]]pt.heat, ASV abundance heatmap
+# [[5]]pt.asvRF, ASVtree wtih hosts plotted as HMA/LMA 
+# [[6]]pt.N, ASV tree number host habitats
+# [[7]]pt.H, ASV tree Shannon H for habitats(host) mapped
+
+
+#treefile<-trfiles[2]
+plot_microbetree_hostrange<- function(treefile) {
+
+  tr <- read.tree(treefile) 
+  title<-unlist(strsplit(treefile,"\\."))[2]
+  print(title)
+  og<-grep("Outgroup",tr$tip.label)
+  print(paste0("Outgroup: ",tr$tip.label[og]))
+  rtr<-ladderize(root(tr,outgroup=og))
+  #root then drop outgroups
+  tr<-drop.tip(rtr,tip=og)
+  anytips<-length(tr$tip.label[tr$tip.label %in% taxa_names(psa)])>2
+  if(anytips==T){
+    if(!file.exists(paste0("07_divresults/",title,".rds"))){
+  res<-calc_div_signal(tree=tr,ps=psa, richness=S.ASV, shannons=shannons.ASV,treetitle=title)
+  save(res,file=paste0(outDir,title,".rds"))
+    }else{load(paste0(outDir,title,".rds"))}
+  return(res)
+  }
+}
+
+trfiles <- list.files(path="bact_trees/rootedtrees", pattern="RAxML_result*", full.names=TRUE, recursive=FALSE)
+
+#set up table to capture summary...time consuming on large trees!
+
+if(!file.exists("07_divresults/div_estimates.rds")){
+    div_estimates<-lapply(trfiles,plot_microbetree_hostrange)
+    xx<-unlist(lapply(trfiles,function(x) unlist(strsplit(x,"\\."))[2]))
+    names(div_estimates)<-unlist(lapply( xx,function(x) strsplit(x,"_seqs")[[1]][1]))
+
+    if(any(sapply(div_estimates, is.null)))
+      {div_estimates<-div_estimates[-which(sapply(div_estimates, is.null))]}
+  save(div_estimates,file=paste0(outDir,"div_estimates.rds"))
+
+#pdf(paste0(outDir,"trees16S_diversities.pdf"))
+#div_estimates
+#dev.off()
+
+# isolate plot types into separate files
+pdf(paste0(outDir,"trees16S_xMA_occupancy.pdf"), height=11, width=8)
+lapply(div_estimates,function (x) if( length(x)>1) x[[5]])
+dev.off()
+pdf(paste0(outDir,"trees16S_hostspecies.pdf"), height=11, width=8)
+temp<-lapply(div_estimates,function (x) {if( length(x)>1) list(x[[2]],x[[3]])})
+temp
+dev.off()
+pdf(paste0(outDir,"trees16S_heatmap.pdf"), height=11, width=8)
+lapply(div_estimates,function (x) if( length(x)>1) x[[4]])
+dev.off()
+pdf(paste0(outDir,"trees16S_hostdiversitysignal.pdf"), height=11, width=8)
+temp<-lapply(div_estimates,function (x) {if( length(x)>1) list(x[[6]],x[[7]])})
+  temp
+dev.off()
+
+}else{load(paste0(outDir,"div_estimates.rds"))}
+divind<-lapply (div_estimates, function(x) x[[1]]) #mean_divs N and H per bacterialgroup
+bacterialgroup<-names(divind)
+
+names(divind)<-NULL
+out.df<-data.frame(matrix(unlist(divind),byrow=T,ncol=2,nrow=length(divind))); rownames(out.df)<-bacterialgroup
+colnames(out.df)<-names(divind[[1]])
+
+par(mfrow=c(2,2)) 
+hist(out.df$N,breaks=20)
+hist(out.df$H,breaks=20)
+
+write.csv(out.df,file=paste0(outDir,"hostdiversity_indices.csv"))
+
+```
+
+
+
+##Abundance heatmaps: ASV trees vs sponge trees
+```{r heats}
+#plot heatmaps to show abundance across all phyla vs sponge tree
+plot_heats<-function(trfile){
+  tr <- read.tree(trfile) 
+  title<-unlist(strsplit(trfile,"\\."))[2]
+  title<-unlist(strsplit(title,"_seqs"))[1]
+  
+  print(title)
+  # apply function
+  og<-grep("Outgroup",tr$tip.label)
+  
+  print(paste0("Outgroup: ",tr$tip.label[og]))
+  rtr<-ladderize(root(tr,outgroup=og))
+  #root then drop outgroups
+  #plot(rtrb)
+  tr<-drop.tip(rtr,tip=og)
+  anytips<-length(tr$tip.label[tr$tip.label %in% taxa_names(psa)])>2
+  if(anytips==T){
+  p.phylo<-ggtree::ggtree(tr,right=T) + ggtree::geom_tiplab()
+  tipnames<-ggtree::get_taxa_name(p.phylo)
+   if(any(sample_sums(psa)>0)){
+    ps<-merge_phyloseq(psa,tr)
+    ps<-prune_taxa(tr$tip.label,ps)
+    sample_data(ps)$Species_consensus<-factor(sample_names(ps),levels=Species.order)
+    #plot host occurence across ASV tips
+    nonzerospp<-which(sample_sums(ps)>0)
+    nonzerospp<- Species.order[Species.order %in% names(nonzerospp)]
+    species_color<-treemeta.u$species_color[which(treemeta.u$Species_consensus %in% nonzerospp)]
+    
+    pt<-plot_tree(ps,size="abundance",color="Species_consensus",label.tips = "taxa_names") + scale_color_manual(values=c(species_color,"gray","black"))
+    
+    pt.asv<-pt + theme(legend.position="none") + ggtitle(title )
+    legend <- cowplot::get_legend(pt ); leg<-cowplot::ggdraw(legend); 
+    pt.heat<-plot_heatmap(ps,taxa.order=tipnames,sample.order=Species.order,title=paste0(title,": observed in sponges"))
+    
+    return(list(p.phylo,pt.asv,leg,pt.heat))
+  }}
+}
+
+
+heats<-lapply(trfiles,plot_heats)
+pdf(paste0(outDir,"heatmaps.pdf"))
+heats
+dev.off()
+
+#using diversity measures saved in out.df, test if H, D, p, N are different between
+# -HMA and LMA sponges.
+# -different btween HMA and LMA type microbes (use top predicted from RF)
+
+
+```
+
+
+
+##Focus on Chloroflexi Dehalococcoidea heatmap
+```{r chloroflex}
+tr <- read.tree("bact_trees/rootedtrees/RAxML_result.Bacteria_Chloroflexi_Dehalococcoidia_seqs") 
+  title<-"Chloroflexi_Dehalococcoidia"
+  # apply function
+  og<-grep("Outgroup",tr$tip.label)
+  
+  print(paste0("Outgroup: ",tr$tip.label[og]))
+  rtr<-ladderize(root(tr,outgroup=og))
+  tr<-drop.tip(rtr,tip=og)
+  
+  #identify focal subclades and prune off smaller trees
+  plot(tr,tip.labels=F);nodelabels()
+  library(phangorn)
+  zoom(tr,focus=unlist(Descendants(tr,node=920,type="tips")))
+par(mfrow=c(1,1))
+trd1<-drop.tip(tr,tip=unlist(Descendants(tr,node=920,type="tips")))
+tr1<-extract.clade(tr,node=920); length(tr1$tip.label); plot(tr1)
+tr1b<-extract.clade(tr1,node=417); length(tr1b$tip.label); plot(tr1b)
+
+plot(trd1); nodelabels(cex=0.5)
+#505 and 676
+tr2<-extract.clade(trd1,node=505); length(tr2$tip.label); plot(tr2)
+tr3<-extract.clade(trd1,node=676); length(tr3$tip.label); plot(tr3)
+tr3b<-extract.clade(tr3,node=317); length(tr3b$tip.label); plot(tr3b)
+
+#need half as many tips
+  plotsubtree<-function(subtr){
+    p.phylo<-ggtree::ggtree(subtr,right=T) + ggtree::geom_tiplab(size=2)
+  tipnames<-ggtree::get_taxa_name(p.phylo)
+    ps<-merge_phyloseq(psa,subtr)
+    ps<-prune_taxa(subtr$tip.label,ps)
+    sample_data(ps)$Species_consensus<-factor(sample_names(ps),levels=Species.order)
+    #plot host occurence across ASV tips
+    nonzerospp<-which(sample_sums(ps)>0)
+    nonzerospp<- Species.order[Species.order %in% names(nonzerospp)]
+    species_color<-treemeta.u$species_color[which(treemeta.u$Species_consensus %in% nonzerospp)]
+    
+    pt<-plot_tree(ps,size="abundance",color="Species_consensus",label.tips = "taxa_names") + scale_color_manual(values=c(species_color,"gray","black"))
+    
+    pt.asv<-pt + theme(legend.position="none") + ggtitle(title )
+    legend <- cowplot::get_legend(pt ); leg<-cowplot::ggdraw(legend); 
+    pt.heat<-plot_heatmap(ps,taxa.order=rev(tipnames),sample.order=Species.order,title=paste0(title,": observed in sponges"))
+  return(list(p.phylo,pt.asv,leg,pt.heat))
+  }
+  t1.plots<-plotsubtree(tr1b)
+    t2.plots<-plotsubtree(tr2)
+  t3.plots<-plotsubtree(tr3b)
+
+  pdf(paste0(outDir,"ChloroflexiHeat.pdf"))
+  t1.plots
+  t2.plots
+  t3.plots
+  dev.off()
+```
+
+
+

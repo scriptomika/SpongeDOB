@@ -1,0 +1,492 @@
+---
+title: "Random Forest modelling of MA status"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,fig.width = 8, results="markdown")
+options(scipen = 999)
+```
+
+
+```{r load, echo=FALSE, include=FALSE} 
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"03_char_results/"
+ifelse(!dir.exists(file.path(mainDir, outDir)), dir.create(file.path(mainDir, outDir)), FALSE)
+library(dplyr)
+library(phyloseq)
+library(ggplot2)
+library(colorspace)
+
+#library(scales);show_col(rainbow_hcl(12))
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+
+
+
+#read in character data to designate species for training models
+chardf<-read.csv("02_input_spongetree/chars_by_species.csv",header = T,stringsAsFactors = F)
+char<-chardf %>% select(Species_consensus,consensusmod)
+char_trainer<-char[!is.na(char$consensusmod),] ##only species with known status included for training model
+
+load("01_results/psRm_bySpecies.rds")
+```
+
+## Random Forest classification of microbiomes into HMA or LMA
+#### RF classification using all `r ntaxa(psRm)` ASV abundances
+
+```{r, RandomForestWrapper}
+# random forest vs glm
+# http://rpubs.com/EAVWing/trees_and_glm
+library(randomForest)
+library(caret)
+
+runRF<-function(traindf, predictdf){
+ rf <- randomForest(consensusmod ~ ., data=traindf, importance=TRUE, proximity=TRUE)
+ imps<-importance(rf)
+#predict new samples without cross-validation
+preds<-predict(rf,predictdf)
+rf.mds<-cmdscale(1-rf$proximity,eig=T)
+return(list(preds,imps,rf.mds))
+}
+
+cross.validateRF<-function(traindf,predictdf){
+  rf_caret <- train(form = consensusmod ~ .,
+                      data = traindf, method = "rf", importance = TRUE,
+                     tuneGrid=expand.grid(.mtry=c(2:round(ncol(traindf)/5),round(ncol(traindf)/4), round(ncol(traindf)/3), round(ncol(traindf)/2),ncol(traindf)-1)),
+                      trControl = trainControl(method = "repeatedcv",
+                                               number = 10,
+                                               repeats = 8))
+cvImp<-varImp(rf_caret)
+predCV<-predict(rf_caret,predictdf)
+#names(allasvRFpredCV)<-rownames(counts)[!(rownames(counts) %in% counts_char_trainer$Species_consensus)]
+names(predCV)<-rownames(predictdf)
+return(list(predCV,rf_caret,cvImp))
+}
+
+cross.validateRF.faster<-function(traindf,predictdf){
+  rf_caret <- train(form = consensusmod ~ .,
+                      data = traindf, method = "rf", importance = TRUE,
+                      trControl = trainControl(method = "repeatedcv",
+                                               number = 10,
+                                               repeats = 8))
+cvImp<-varImp(rf_caret)
+predCV<-predict(rf_caret,predictdf)
+#names(allasvRFpredCV)<-rownames(counts)[!(rownames(counts) %in% counts_char_trainer$Species_consensus)]
+names(predCV)<-rownames(predictdf)
+return(list(predCV,rf_caret,cvImp))
+}
+```
+
+```{r fxn_plotImportance}
+#takes rf$importance df as input
+msp.varImpPlot<-function (imp, sort = TRUE, n.var = min(30, nrow(imp)), 
+    type = NULL, class = NULL, scale = TRUE,  main="Importance",...) {
+    #if (!inherits(x, "randomForest")) 
+   #     stop("This function only works for objects of class `randomForest'")
+  #  imp <- importance(x, class = class, scale = scale, type = type, ...)
+    if (ncol(imp) > 2) 
+        imp <- imp[, -(1:(ncol(imp) - 2))]
+    nmeas <- ncol(imp)
+    if (nmeas > 1) {
+        op <- par(mfrow = c(1, 2), mar = c(4, 5, 4, 1), mgp = c(2, 
+            0.8, 0), oma = c(0, 0, 2, 0), no.readonly = TRUE)
+        on.exit(par(op))
+    }
+    for (i in 1:nmeas) {
+        ord <- if (sort) 
+            rev(order(imp[, i], decreasing = TRUE)[1:n.var])
+        else 1:n.var
+        xmin <- if (colnames(imp)[i] %in% c("IncNodePurity", 
+            "MeanDecreaseGini")) 
+            0
+        else min(imp[ord, i])
+        dotchart(imp[ord, i], xlab = colnames(imp)[i], ylab = "",cex=.5, 
+            main = if (nmeas == 1) 
+                main
+            else NULL, xlim = c(xmin, max(imp[, i])), ...)
+    }
+    if (nmeas > 1) 
+        mtext(outer = TRUE, side = 3, text = main, cex = 1.2)
+    invisible(imp)
+}
+```
+
+```{r runRF_all,results="markdown"}
+
+#convert to relative abundance since species have different read totals
+relabund.spp<- transform_sample_counts(psRm, function(OTU) OTU/sum(OTU)) #convert to relative abundance
+#sample_sums(relabund.spp) #should all be 1
+#min(taxa_sums(relabund.spp))
+relabund.spp1<-prune_taxa(taxa_sums(relabund.spp)>0.001,relabund.spp)
+
+if(!(file.exists("RFallASV.rds"))){
+ 
+counts<-round(data.frame(otu_table(relabund.spp1)),digits = 4)#need to round becuase hitting memory errors in RF execution
+counts$Species_consensus<-rownames(counts)
+ 
+
+counts_char_trainer<-inner_join(char_trainer,counts, by="Species_consensus")
+rownames(counts_char_trainer)<-counts_char_trainer[,1]
+data2train<-counts_char_trainer[,-1] #drop Species_consensus column
+data2train$consensusmod<-as.factor(data2train$consensusmod)
+
+data2predict<-counts[!(rownames(counts) %in% counts_char_trainer$Species_consensus),]
+  
+start1<-Sys.time()
+set.seed(33)
+#run RF functions
+out1<-runRF(data2train,data2predict)
+all_predstates<-out1[[1]]
+imp.all<-out1[[2]]
+all.mds<-out1[[3]]
+cat ("GOF:");print(all.mds$GOF)
+plot(all.mds$points[,1],all.mds$points[,2])
+out2<-cross.validateRF.faster(data2train,data2predict)
+all_predstatesCV<-out2[[1]]; RFcv<-out2[[2]]; 
+print(RFcv)
+
+end1<-Sys.time()
+cat("Random Forest and Cross-validation of HMA/LMA states using all ASVs took:")
+print(end1-start1) #Time difference of 46 mins
+
+save(all_predstates,all_predstatesCV,out1,file=paste0(outDir,"RFallASV.rds"))
+}else{load(paste0(outDir,"RFallASV.rds"))}
+#compare original predictions to cross-validated prediction
+
+cbind(all_predstates,all_predstatesCV)
+all_predstates<-out1[[1]]
+imp.all<-out1[[2]]
+tmp<-as.data.frame(imp.all)
+#tmp[rev(order(tmp$MeanDecreaseAccuracy)),]
+
+all.mds<-out1[[3]]
+cat("GOF:"); print(all.mds$GOF)
+plot(all.mds$points[,1],all.mds$points[,2])
+
+topimps<-tmp[which(tmp$MeanDecreaseAccuracy>0),]
+#hist(topimps$MeanDecreaseAccuracy)
+#quantile(topimps$MeanDecreaseAccuracy)
+tax_table(relabund.spp1)[rownames(topimps),"KPC"]
+
+rownames(imp.all)<-c(tax_table(relabund.spp1)[rownames(tax_table(relabund.spp1)) %in% rownames(imp.all),"KPC"])
+msp.varImpPlot(imp.all)
+
+topimps$KPC<-c(tax_table(relabund.spp1)[rownames(tax_table(relabund.spp1)) %in% rownames(topimps),"KPC"])
+#table(topimps$KPC)
+barplot(table(topimps$KPC),cex.names=0.4,horiz=T,las=2,xlab="RF Importance score (MeanDecreaseAccuracy)")
+
+#save predictions later, after adding a column in imp.phy ascribing which HMA LMA condition is more enriched for each phylum
+#save(imp.phy,file="RFimportance_phyla.Rds")
+
+library(tidyr)
+topimps2<-imp.all[rowSums(imp.all[,1:2])>median(rowSums(imp.all[,1:2])),]
+topimps3<-topimps2[rowSums(topimps2[,1:2])>median(rowSums(topimps2[,1:2])),]
+
+imp2<-data.frame(topimps3[rev(order(rowSums(topimps3[,1:2]))),1:2]); imp2$KP<-rownames(imp2)
+gathered<-gather(imp2,variable,value, -KP)
+gathered$KP<-factor(gathered$KP,levels=imp2$KP)
+
+ggplot(gathered, aes(x=value, y=KP)) +   
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  theme(axis.text.y=element_text(angle=0,hjust=1,vjust=0.5,size=2))
+
+```
+
+#### Predict HMA-LMA status using overall abundance of microbial PHYLA only
+ 
+```{r RFphyla}
+phylumGlommed = tax_glom(psRm, taxrank="Phylum")
+tax_table(phylumGlommed)[,"KP"]<-paste0(tax_table(phylumGlommed)[,"Kingdom"],"_",tax_table(phylumGlommed)[,"Phylum"])
+#convert to relative abundance since species have different read totals
+relabund.phy<- transform_sample_counts(phylumGlommed, function(OTU) OTU/sum(OTU)) 
+save(phylumGlommed,relabund.phy,file=paste0(outDir,"psRm.phylum.Rds"))
+#convert to relative abundance
+sample_sums(relabund.phy) #should all be 1
+
+phycounts1<-as.data.frame(otu_table(relabund.phy))
+phycounts2<-round(phycounts1,digits=4) #need to round becuase hitting memory errors in RF execution
+phycounts3<-phycounts2[,colSums(phycounts2)>0]
+
+tmp<-round(otu_table(relabund.phy),digits = 4)#need to round becuase hitting memory errors in RF execution
+relabund.phy1<-prune_taxa(taxa_sums(tmp)>0.001,tmp)
+min(taxa_sums(relabund.phy1))
+phycounts1<-data.frame(relabund.phy1)
+ncol(phycounts1) 
+phycounts1<-phycounts1[,colSums(phycounts1)>0]
+
+
+phycounts<-phycounts1[rownames(phycounts1) %in% char_trainer$Species_consensus,]
+colSums(phycounts)
+phycounts$Species_consensus<-rownames(phycounts)
+phycounts_char_trainer<-inner_join(char_trainer,phycounts, by="Species_consensus")
+
+rownames(phycounts_char_trainer)<-phycounts_char_trainer[,1]
+data2train<-phycounts_char_trainer[,-1]
+data2train$consensusmod<-as.factor(data2train$consensusmod)
+
+#setup data to be fit using phyla abundances
+data2predict<-phycounts3[!(rownames(phycounts3) %in% phycounts_char_trainer$Species_consensus),]
+
+```
+RF classification using only agglomerated abundances of `r ntaxa(phylumGlommed)` phyla detected across `r nsamples(psRm)` species.
+
+```{r RFphyla2,results="markdown"}
+
+
+#run RF functions
+out<-runRF(data2train,data2predict)
+phy_predstates<-out[[1]]
+imp.phy<-out[[2]]
+phy.mds<-out[[3]]
+print(phy.mds$GOF)
+plot(phy.mds$points[,1],phy.mds$points[,2])
+out<-cross.validateRF(data2train,data2predict)
+phy_predstatesCV<-out[[1]]; phyRFcv<-out[[2]]; 
+print(phyRFcv)
+#phyImportance<-out[[3]]
+#plot(phyImportance) #use RF imp measures for plotting
+
+#compare:
+cbind(all_predstatesCV,phy_predstates,phy_predstatesCV)
+
+
+```
+
+Importance measures for phyla in RF classification. 
+
+```{r}
+rownames(imp.phy)<-c(tax_table(phylumGlommed)[rownames(tax_table(phylumGlommed)) %in% rownames(imp.phy),"KP"])
+
+msp.varImpPlot(imp.phy)
+
+#save predictions later, after adding a column in imp.phy ascribing which HMA LMA condition is more enriched for each phylum
+#save(imp.phy,file="RFimportance_phyla.Rds")
+
+library(tidyr)
+imp2<-data.frame(imp.phy[rev(order(rowSums(imp.phy[,1:2]))),1:2]); imp2$KP<-rownames(imp2)
+gathered<-gather(imp2,variable,value, -KP)
+gathered$KP<-factor(gathered$KP,levels=imp2$KP)
+
+ggplot(gathered, aes(x=value, y=KP)) +   
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  theme(axis.text.x=element_text(angle=0,hjust=1,vjust=0.5,size=3))
+
+```
+
+
+#### Predict HMA-LMA status using abundance of microbial CLASSES only
+ 
+```{r RFclass1}
+classGlommed = tax_glom(psRm, taxrank="Class")
+tax_table(classGlommed)[,"KPC"]<-paste0(tax_table(classGlommed)[,"Kingdom"],"_",tax_table(classGlommed)[,"Phylum"],"_",tax_table(classGlommed)[,"Class"])
+#convert to relative abundance since species have different read totals
+relabund.class<- transform_sample_counts(classGlommed, function(OTU) OTU/sum(OTU)) #convert to relative abundance
+sample_sums(relabund.class) #should all be 1
+save(classGlommed,relabund.class,file=paste0(outDir,"psRm.class.Rds"))
+
+clcounts1<-as.data.frame(otu_table(relabund.class))
+clcounts2<-round(clcounts1,digits=4) #need to round becuase hitting memory errors in RF execution
+colSums(clcounts2)
+clcounts3<-clcounts2[,colSums(clcounts2)>0]
+clcounts3$Species_consensus<-rownames(clcounts3)
+
+clcounts<-clcounts3[rownames(clcounts3) %in% char_trainer$Species_consensus,]
+clcounts_char_trainer<-inner_join(char_trainer,clcounts, by="Species_consensus")
+rownames(clcounts_char_trainer)<-clcounts_char_trainer[,1]
+data2train<-clcounts_char_trainer[,-1]
+
+data2train$consensusmod<-as.factor(data2train$consensusmod)
+
+#setup data to be fit using phyla abundances
+data2predict<-clcounts3[!(rownames(clcounts3) %in% phycounts_char_trainer$Species_consensus),]
+
+
+```
+RF classification using only agglomerated abundances of `r ntaxa(classGlommed)` classes detected across `r nsamples(psRm)` species.
+
+```{r RFclass2,results="markdown"}
+out<-runRF(data2train,data2predict)
+cl_predstates<-out[[1]]
+imp.cl<-out[[2]]
+cl.mds<-out[[3]]
+print(cl.mds$GOF)
+plot(cl.mds$points[,1],cl.mds$points[,2])
+out<-cross.validateRF(data2train,data2predict)
+cl_predstatesCV<-out[[1]]; clRFcv<-out[[2]]; 
+print(clRFcv)
+
+rownames(imp.cl)<-c(tax_table(classGlommed)[rownames(tax_table(classGlommed)) %in% rownames(imp.cl),"KPC"])
+
+msp.varImpPlot(imp.cl)
+
+library(tidyr)
+imp2<-data.frame(imp.cl[rev(order(rowSums(imp.cl[,1:2]))),1:2]); imp2$KP<-rownames(imp2)
+
+gathered<-gather(imp2,variable,value, -KP)
+gathered$KP<-factor(gathered$KP,levels=imp2$KP)
+
+ggplot(gathered, aes(x=value, y=KP)) +   
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  theme(axis.text.x=element_text(angle=0,hjust=1,vjust=0.5,size=3))
+
+
+#compare:
+cbind(all_predstatesCV,phy_predstatesCV,cl_predstatesCV)
+```
+
+Comparison of sponges species' predictions that differ depending on level used during RF classification.
+```{r,results="markdown"}
+#add predictions to character dataframe
+tmp<-char; rownames(tmp)<-tmp$Species_consensus
+
+pred<-as.character(all_predstatesCV); names(pred)<-names(all_predstatesCV)
+char$consensusRF_asv<-ifelse(is.na(tmp$consensusmod), pred[rownames(tmp)], tmp$consensusmod)
+
+pred2<-as.character(phy_predstatesCV); names(pred2)<-names(phy_predstatesCV)
+char$consensusRF_phyla<-ifelse(is.na(tmp$consensusmod), pred2[rownames(tmp)], tmp$consensusmod)
+
+pred3<-as.character(cl_predstatesCV); names(pred3)<-names(cl_predstatesCV)
+char$consensusRF_class<-ifelse(is.na(tmp$consensusmod), pred2[rownames(tmp)], tmp$consensusmod)
+
+save(char,file=paste0(outDir,"species_charsRF.Rds"))
+char %>% filter(consensusRF_phyla!= consensusRF_asv |consensusRF_phyla!= consensusRF_class | consensusRF_class!= consensusRF_asv)
+```
+
+
+
+```{r saveImportanceRFpreds}
+
+#save Importance values of each Phylum, 
+#add in columns wtih 
+# -mean relative abundance of phylum in each type LMAra HMAra
+# -pval for differential abundance pval
+# -which type is enriched enrichedIn
+
+load("01_results/psR.rds")
+sdat<-data.frame(sample_data(psR)); sdat$X<-rownames(sdat)
+sdat<-sdat %>% left_join(.,char); rownames(sdat)<-sdat$X
+sample_data(psR)<-sdat
+
+phylumGlommed<-tax_glom(psR,taxrank="Phylum")
+tax_table(phylumGlommed)[,"KP"]<-paste0(tax_table(phylumGlommed)[,"Kingdom"],"_",tax_table(phylumGlommed)[,"Phylum"])
+keep<-sample_names(phylumGlommed)[!is.na(sample_data(phylumGlommed)$consensusRF_phyla)]
+p2<-prune_samples(keep,phylumGlommed)
+
+ps2df<-function(ps){
+OTU1 = as(otu_table(ps), "matrix")
+# transpose if necessary
+if(taxa_are_rows(ps)){OTU1 <- t(OTU1)}
+# Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+return(OTUdf)
+}
+psdf<-ps2df(p2)
+phyla_pvals<-apply(psdf,2,function(p) 
+  {ttest<-t.test(p~factor(sample_data(p2)$consensusRF_phyla)) 
+  return(ttest$p.value)})
+names(phyla_pvals)<-tax_table(p2)[,"KP"]
+
+#merge_samples sums otu_counts, instead of averaging across sample factor.  Manually calc average for HMA and LMA
+PGroup <- transform_sample_counts(p2, function(x) x / sum(x))
+SampleType <- factor(sample_data(PGroup)$consensusRF_phyla)
+table(SampleType)
+
+mean_PGroup <- sapply(levels(SampleType),function(i){
+  rowMeans(otu_table(PGroup)[,SampleType==i])
+})
+
+phy <- tax_table(PGroup)[rownames(mean_PGroup ),"KP"]
+rownames(mean_PGroup) <- phy
+colnames(mean_PGroup)<-c("HMAra","LMAra")
+mean_PGroup<-data.frame(mean_PGroup)
+mean_PGroup$bacterial_group<-rownames(mean_PGroup)
+
+#combine results, add to dataframe for plotting
+enrichedP<-round(phyla_pvals,8) %>% data.frame; colnames(enrichedP)<-"pval"
+enrichedP$bacterial_group<-rownames(enrichedP)
+
+
+imp.phy2<-data.frame(imp.phy)
+imp.phy2$bacterial_group<-rownames(imp.phy2)
+imp.phy2<-left_join(imp.phy2,mean_PGroup) %>% left_join(.,enrichedP)
+imp.phy2<-imp.phy2 %>% mutate(HMLvLMA=ifelse(HMAra>LMAra,HMAra*100,(-100*LMAra)))
+
+imp.phy2<-imp.phy2 %>% mutate(enrichedIn=ifelse(HMAra>LMAra,"HMA","LMA"))
+imp.phy<-imp.phy2
+save(imp.phy,file=paste0(outDir,"RFimportance_phyla.Rds"))
+
+
+
+
+
+cGlommed<-tax_glom(psR,taxrank="Class")
+tax_table(cGlommed)[,"KPC"]<-paste0(tax_table(cGlommed)[,"Kingdom"],"_",tax_table(cGlommed)[,"Phylum"],"_",tax_table(cGlommed)[,"Class"])
+keep<-sample_names(cGlommed)[!is.na(sample_data(cGlommed)$consensusRF_phyla)]
+p3<-prune_samples(keep,cGlommed)
+psdf<-ps2df(p3)
+class_pvals<-apply(psdf,2,function(p) 
+  {ttest<-t.test(p~factor(sample_data(p3)$consensusRF_phyla)) 
+  return(ttest$p.value)})
+names(class_pvals)<-tax_table(p3)[,"KPC"]
+
+CGroup<-transform_sample_counts(p3,fun= function(otu) otu/sum(otu))
+SampleType <- factor(sample_data(CGroup)$consensusRF_phyla)
+table(SampleType)
+
+mean_CGroup <- sapply(levels(SampleType),function(i){
+  rowMeans(otu_table(CGroup)[,SampleType==i])
+})
+
+clas <- tax_table(p3)[rownames(mean_CGroup ),"KPC"]
+rownames(mean_CGroup) <- clas
+
+colnames(mean_CGroup)<-c("HMAra","LMAra")
+mean_CGroup<-data.frame(mean_CGroup)
+mean_CGroup$bacterial_group<-rownames(mean_CGroup)
+
+#combine results, add to dataframe for plotting
+enrichedP<-round(class_pvals,8) %>% data.frame; colnames(enrichedP)<-"pval"
+enrichedP$bacterial_group<-rownames(enrichedP)
+
+
+imp.cl2<-data.frame(imp.cl)
+imp.cl2$bacterial_group<-rownames(imp.cl2)
+imp.cl2<-left_join(imp.cl2,mean_CGroup) %>% left_join(.,enrichedP)
+imp.cl2<-imp.cl2 %>% mutate(HMLvLMA=ifelse(HMAra>LMAra,HMAra*100,(-100*LMAra)))
+
+imp.cl2<-imp.cl2 %>% mutate(enrichedIn=ifelse(HMAra>LMAra,"HMA","LMA"))
+imp.cl<-imp.cl2
+save(imp.cl,file=paste0(outDir,"RFimportance_class.Rds"))
+
+```
+
+```{r setIimportanceThreshold}
+
+modImps<-function(imps){
+  #eliminate less/non predictive taxa
+  imps<-imps[!(is.na(imps$enrichedIn)),] #NA = goups where avg rel abund is 0 for both
+  #order: HMA (strongest to weakest) then LMA (weakest to strongest)
+  imps<-imps[imps$MeanDecreaseAccuracy>0,]
+  #ord:
+  negAcc<-imps$MeanDecreaseAccuracy*-1
+  imps<-cbind.data.frame(imps,negAcc)
+  AccOrder<-apply(imps,1, function(x) ifelse(x["enrichedIn"]=="LMA",x["negAcc"],x["MeanDecreaseAccuracy"]))
+  imps<-cbind.data.frame(imps,AccOrder,stringsAsFactors=F)
+  imps<-imps[rev(order(as.numeric(imps$AccOrder))),]
+}
+imp.phy<-modImps(imp.phy)
+imp.cl<-modImps(imp.cl)
+save(imp.phy,imp.cl,file=paste0(outDir,"mostImp.Rds"))
+```

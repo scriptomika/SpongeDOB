@@ -1,0 +1,240 @@
+---
+title: "Untitled"
+author: "Sabrina Pankey"
+date: "11/30/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide",fig.width = 8)
+options(scipen = 999)
+```
+
+```{r load, include=FALSE}
+## Load libraries & set working directorylibrary(phyloseq); 
+set.seed(12345)
+library(phyloseq)
+library(ggplot2)
+library(ggrepel)
+library(microbiome)
+
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"01_results/"
+ifelse(!dir.exists(file.path(mainDir, outDir)), dir.create(file.path(mainDir, outDir)), FALSE)
+
+#import ASV count table
+table<-read.csv("01_inputs_DADA/dada_table.csv",header=T,stringsAsFactors=F)
+ASVtab<-table[,-1]
+#save sequences
+ASVseqs<-table[,1]
+names(ASVtab)<-gsub("\\.","-",names(ASVtab))
+#import taxonomy
+taxa<-read.csv("01_inputs_DADA/dada_taxa.csv",header=T,stringsAsFactors=F)
+rownames(taxa) <-rownames(ASVtab)# must match ASV table rownames
+taxa<-taxa[,-1]
+rm(table)
+taxa$KP<-as.factor(paste0(taxa$Kingdom,'_',taxa$Phylum))
+taxa$KPC<-as.factor(paste0(taxa$Kingdom,'_',taxa$Phylum,'_',taxa$Class))
+taxa2<-as.matrix(taxa)
+#import metadata
+sampdf<-read.csv("01_inputs_DADA/metaDOB.csv",header=T,row.names=1)
+rnames<-rownames(sampdf) #save names
+addLevel <-function(x){if(is.factor(x)) return(factor(x, levels=c(levels(x), "TBD"))); return(x)}
+sampdf$Species_consensus<-addLevel(sampdf$Species_consensus)
+sampdf$Species_consensus[sampdf$Species_consensus==0]<-"TBD"
+addLevel <-function(x){if(is.factor(x)) return(factor(x, levels=c(levels(x), "unk"))); return(x)}
+sampdf<-data.frame(lapply(sampdf,addLevel))
+sampdf$phyloClass[sampdf$phyloClass==""]<-"unk"
+sampdf$phylosubClass[sampdf$phylosubClass==""]<-"unk"
+sampdf$phyloOrder[sampdf$phyloOrder==""]<-"unk"
+sampdf$phyloFamily[sampdf$phyloFamily==""]<-"unk"
+sampdf$phyloGenus[sampdf$phyloGenus==""]<-"unk"
+rownames(sampdf)<-rnames #restore names
+sampdf$Species_consensus
+#  make sure metadata rownames and ASVtable names match !!
+rownames(sampdf)[!(rownames(sampdf) %in% names(ASVtab))]
+names(ASVtab)[!(names(ASVtab)%in% rownames(sampdf))]
+#sampdf$phyloTreeRank
+
+#create phyloseq object
+tab<-otu_table(ASVtab, taxa_are_rows=T); taxa_names(tab)
+meta<-sample_data(sampdf)
+taxon<-tax_table(taxa2); taxa_names(taxon)<-taxa_names(tab)
+ps <- phyloseq(tab, meta, taxon)
+
+rm(tab); rm(meta)
+names(ASVseqs)<-taxa_names(ps)
+
+notchloroplasts<-taxa_names(ps)[which(tax_table(ps)[,"Order"]!="Chloroplast")]
+OrderNA<-taxa_names(ps)[which(is.na(tax_table(ps)[,"Order"]))]
+notchloroplasts<-c(notchloroplasts,OrderNA)
+psNoC<-prune_taxa(taxa_names(ps) %in% notchloroplasts,ps)
+#remove unneeded samples and drop empty taxa after
+ps2 <-prune_samples(sample_data(ps)$project=="DOB", psNoC) #remove nonDOB samples
+ps2 <- prune_samples(sample_data(ps2)$discard!='y', ps2) #remove previously examined, outliers etc
+chimeras<-rownames(sampdf)[sampdf$DNAid %in% c("KY265","KY284","KY285","KY286","KY287")]
+ps2<-prune_samples(!(sample_names(ps2) %in% chimeras), ps2)
+ps2<-prune_taxa(taxa_sums(ps2)!=0,ps2)
+ps2<-prune_samples(sample_data(ps2)$depth=="50fsw",ps2)
+#remove rare ASV taxa
+
+any(taxa_sums(ps2) == 0)
+#nrow(tax_table(ps2))
+#57935
+#sum(taxa_sums(ps2) < 10) #number of ASVs less than 10 read counts
+#29547
+#hist(taxa_sums(ps2),breaks=100000,xlim=c(0,200)) #big drop off at 50
+
+# sum(taxa_sums(ps2) < 50)
+# #45701
+# sum(taxa_sums(ps2) > 49) #number of ASVs more than 49 read counts
+# #12234
+# ps3 <-prune_taxa(taxa_sums(ps3) > 49, ps3) #remove rare ASVs for now
+# hist(taxa_sums(ps3),breaks=100000,xlim=c(0,1000)) 
+
+# taxa cumulative sum
+
+#save values and remove to save memory
+
+psSnum<- nsamples(ps)
+psTnum<- ntaxa(ps)
+psMean<- mean(sample_sums(ps))
+
+cplastN<- ntaxa(ps) - ntaxa(psNoC)
+rm(ps);rm(psNoC)
+```
+```{r plots,results="markdown"}
+tdt<- data.table::data.table(tax_table(ps2),TotalCounts = taxa_sums(ps2), OTU = taxa_names(ps2))
+ggplot(tdt, aes(TotalCounts)) + geom_histogram() + ggtitle("Histogram of Total Counts")
+
+taxcumsum = tdt[, .N, by = TotalCounts]
+rm(tdt)
+data.table::setkey(taxcumsum, TotalCounts)
+taxcumsum[, CumSum := cumsum(N)]
+# Define the plot
+pCumSum = ggplot(taxcumsum, aes(TotalCounts, CumSum)) + 
+  geom_point() + xlab("Filtering Threshold, Minimum Total Counts") +
+  ylab("OTUs Filtered") +ggtitle("OTUs that would be filtered vs. the minimum count threshold")
+pCumSum
+pCumSum + xlim(0, 200) #zoom, inflection point around 25 total counts
+
+source("src/taxa_summary.R", local = TRUE)
+mdt = fast_melt(ps2)
+prevdt = mdt[, list(Prevalence = sum(count > 0), TotalCounts = sum(count)),by = TaxaID]
+prevdt[(Prevalence == 2), .N] # number of taxa found in only 2 or fewer samples
+#5332
+prevdt[(Prevalence == 1), .N] # number of taxa found in only 1 sample
+#40675
+#prevdt[(Prevalence <= 1), .N] # number of taxa found in only 1 or 0 samples..should be the same
+
+pPrev<-ggplot(prevdt, aes(Prevalence)) + geom_histogram() + ggtitle("Histogram of Taxa Prevalence")
+pPrev + xlim(0,10)
+
+
+# taxa cumulative sum by Prevalence
+prevcumsum = prevdt[, .N, by = Prevalence]
+data.table::setkey(prevcumsum, Prevalence)
+prevcumsum[, CumSum := cumsum(N)]
+
+pPrevCumSum = ggplot(prevcumsum, aes(Prevalence, CumSum)) + 
+  geom_point() + xlab("Filtering Threshold, Prevalence") +
+  ylab("OTUs Filtered") + ggtitle("OTUs that would be filtered vs. the minimum count threshold")
+pPrevCumSum + xlim(0,50)
+pPrevCumSum + xlim(0,10)
+
+ggplot(prevdt, aes(Prevalence, TotalCounts)) + geom_point(size = 4, alpha = 0.75) + 
+  scale_y_log10()
+rm(pPrevCumSum)
+#are certain types of taxa more prevalent, based on top 9 prevalent taxa
+addPhylum = unique(copy(mdt[, list(TaxaID, Phylum)]))
+# Join by TaxaID
+data.table::setkey(prevdt, TaxaID)
+data.table::setkey(addPhylum, TaxaID)
+prevdt <- addPhylum[prevdt]
+showPhyla = prevdt[, sum(TotalCounts), by = Phylum][order(-V1)][1:9]$Phylum
+data.table::setkey(prevdt, Phylum)
+ggplot(prevdt[showPhyla], mapping = aes(Prevalence, TotalCounts, color = Phylum)) + 
+  geom_point(size = 4, alpha = 0.75) + scale_y_log10()
+
+#based on these plots, should filter out taxa with fewer than 25 total counts,
+# and require taxa to be present in at least 2 samples; 
+# a higher stringency would discard many of the  unique taxa that may only 
+# occur in one species, maybe represented by as few as 2 samples.
+keepTaxa = prevdt[(Prevalence >= 2 & TotalCounts > 10), TaxaID]
+ps3 = prune_taxa(keepTaxa, ps2)
+#ntaxa(ps3)
+#15400
+#ntaxa(ps2) #57935, so about 25% of all taxa detected can be found in at least 2 samples with 10 counts overall
+#filter out low-count samples
+#save values and remove to save memory
+ps2Snum<- nsamples(ps2)
+ps2Tnum<- ntaxa(ps2)
+ps2mean<- mean(sample_sums(ps2))
+rm(ps2)
+rm(prevdt)
+rm(mdt)
+sdt = data.table::data.table(as(sample_data(ps3), "data.frame"), TotalReads = sample_sums(ps3), keep.rownames = TRUE)
+data.table::setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram() + ggtitle("Sequencing Depth")
+pSeqDepth
+pSeqDepth + facet_wrap(~locale)
+rm(sdt); rm(pSeqDepth)
+```
+```{r}
+length(which(sample_sums(ps3)<1))
+length(which(sample_sums(ps3)<100))
+length(which(sample_sums(ps3)<1000))
+hist(sample_sums(ps3),breaks=10000)
+
+hist(sample_sums(ps3),xlim=c(0,10000),breaks=10000)
+#length(which(sample_sums(ps3)<4000)) #43 samples under 4000 counts
+ps4<-prune_samples(sample_sums(ps3)>=4000,ps3)
+ps4<-prune_taxa(taxa_sums(ps4)!=0,ps4)
+#ps4
+
+## ps = every sample
+## ps2 = nonDOB, discards, chimera species, non-50fsw
+## ps3 = rare taxa excluded
+## ps4 = low-count samples excluded
+#rm(ps2); rm(ps3) #clear memory
+
+save(ps4, file=paste0(outDir,"ps4.rds"))
+
+#save sequences corresponding to ps4
+ASVseqs.ps4<-ASVseqs[taxa_names(ps4)]
+#ASVseqs.ps4[1:5]
+
+save(ASVseqs.ps4, file=paste0(outDir,"ps4.seqs.rds"))
+
+```
+
+###Data dimensions
+
+All data:
+
+- Number samples: `r psSnum`
+- Number ASVs: `r psTnum`
+- mean library size: `r psMean`
+
+Chloroplast ASVs removed: `r cplastN`
+
+Data excluding chimeras, nonDOB, non50fsw and flagged samples:
+
+- Number samples: `r ps2Snum`
+- Number ASVs: `r ps2Tnum`
+- mean library size: `r ps2mean`
+
+Data after exclusion of transient taxa (only observed in one sample or <10 reads ever):
+
+- Number samples: `r nsamples(ps3)`
+- Number ASVs: `r ntaxa(ps3)`
+- mean library size: `r mean(sample_sums(ps3))`
+
+Data after exlusion of samples with fewer than 4000 reads:
+
+- Number samples: `r nsamples(ps4)`
+- Number ASVs: `r ntaxa(ps4)`
+- mean library size: `r mean(sample_sums(ps4))`

@@ -1,0 +1,476 @@
+---
+title: "TimeTree annotation, comparison, characters, phylogsignal"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide",fig.width = 8)
+```
+
+
+```{r load, echo=FALSE, include=FALSE} 
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"02_tree_results/"
+dir.exists(file.path(mainDir, outDir))
+library(dplyr)
+
+
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(phytools)
+library(phangorn)
+library(colorspace)
+
+#library(scales);show_col(viridis_pal(option="C")(100))
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+
+
+
+
+```
+
+```{r read_species_tree_meta}
+#confirm species tree (pruned from samples) matches toplogy with iqtree inferred for species
+load(paste0(outDir,"treeitems.Rds")) #loads tr (filtered sample tree with refs), colsC
+tr1<-tr
+
+#IQtree fossil-calibrated with PLtree:
+tr<-read.tree("02_input_spongetree/species.dated.tre")
+
+cons_topo<-read.tree("02_input_spongetree/txparts_best_cons.treefile.tre") #constraint tree
+bs_supp<-read.tree("02_input_spongetree/bothsets_con.treefile.tre") #bootstrap node supports
+bs_supp<-drop.tip(bs_supp, tip= bs_supp$tip.label[!(bs_supp$tip.label %in% tr$tip.label)]) #Rezinkovia got dropped in TreePL analysis
+txtr<-root(cons_topo,outgroup = "Capsaspora_owczarzaki")
+plot(ladderize(txtr))
+#bs_supp is same tree as tr, with bootsrap supports
+
+
+#exclude weird tips
+    #tr<-drop.tip(tr,tip=c("CU261","SX271","CU087","BZ015","CU268","CU237","CU037","BZ175","BZ147","CU047","KY066","KY032","CU209","SX274","BZ132","BZ193","SX257","Bathydorus_sp_SB2012","KY089","Microscleroderma_herdmani"))
+
+problemtip<-c("KY089","BZ015","CU037","BZ175","CU047","KY066","KY032","SX257","Paratimea_constellata")
+tr<-drop.tip(tr,tip=problemtip) #Paratimea constellata moves from Axinellida to Tethyida in the species tree
+bs_supp<-drop.tip(bs_supp,tip=problemtip) 
+
+#root
+#outgroups<-c("Nematostella","Capitella")
+#rootnode<-getMRCA(tr, tip=outgroups)
+#tr<-ladderize(root(tr,node=rootnode))
+outgroup<-c("Capsaspora_owczarzaki")
+tr<-ladderize(root(tr,outgroup =outgroup))
+bs_supp<-ladderize(root(bs_supp,outgroup =outgroup))
+cons_topo<-ladderize(root(cons_topo,outgroup =outgroup))
+plot(cons_topo,show.tip.label=F);nodelabels(cons_topo$node.label,cex=0.3)
+
+
+```
+
+```{r plotSupport_constraints}
+#isolate constrained nodes in species tree
+node_des.constraint<-lapply(sort(unique(cons_topo$edge[,1])),function(x) cons_topo$tip.label[unlist(Descendants(cons_topo,x,type = "tips"))])
+node<-as.numeric(unlist(lapply(node_des.constraint,function(x) getMRCA(bs_supp,x))))
+tx_bs<-as.numeric(cons_topo$node.label)
+constraintNode_bs<-cbind.data.frame(node,tx_bs)
+
+
+plot(bs_supp,cex=0.3,show.tip.label=F)
+nodelabels(bs_supp$node.label,cex=0.5)
+gt<-ggtree(bs_supp,right=T) 
+gt$data<-gt$data %>% left_join(.,constraintNode_bs)
+gt + geom_tiplab(size=1) +
+geom_point2(aes(subset = as.numeric(label)>=90 & !isTip),size=1) + 
+geom_point2(aes(subset = as.numeric(label)>=80 & as.numeric(label)<90 & !isTip),size=1,color="darkgray") +
+geom_point2(aes(subset = as.numeric(label)>70 & as.numeric(label)<80 & !isTip),size=1,color="gray") +
+geom_point2(aes(subset = as.numeric(tx_bs)>99 & !isTip),size=1,color="red") #+
+  #geom_point2(aes(subset = as.numeric(tx_bs)<99 & !isTip),size=1,color="red") 
+
+pdf(paste0(outDir,"species_tree_supports.pdf"),height=20,width=8)
+x <- c(rep(NA,Ntip(bs_supp)), as.numeric(bs_supp$node.label))
+col <- cut(x, breaks=c(0,50,75,90,100))
+col <- factor(col, levels=rev(levels(col)))
+col <- factor(col, labels=c("91-100%","76-90%","51-75%","0-50%"))
+p <- ggtree(bs_supp,right=T)  
+p$data<-p$data %>% left_join(.,constraintNode_bs)
+
+p<- p +    geom_tiplab(size = 1, col ="black")  + 
+    geom_point(aes(color=col), alpha=1, size=1.5, show.legend = TRUE) + 
+   theme(legend.position = c(0.1, 0.1)) +
+    scale_colour_manual(na.translate = F, name="Bootstrap support",
+                        values=c("black","darkgray","gray","lightgray")) +
+    guides(color = guide_legend(override.aes = list(size = 1))) 
+p + geom_point2(aes(subset = as.numeric(tx_bs)>99 & !isTip),size=1,color="red")
+dev.off()
+
+pdf(paste0(outDir,"species_tree_supports.circ.pdf") ,height=10,width=10)
+p <- ggtree(bs_supp,right=T,layout="circular")  
+p$data<-p$data %>% left_join(.,constraintNode_bs)
+
+p<- p +    geom_tiplab2(size = 1, col ="black")  + 
+    geom_point(aes(color=col), alpha=1, size=1.5, show.legend = TRUE) + 
+   theme(legend.position = c(0.1, 0.1)) +
+    scale_colour_manual(na.translate = F, name="Bootstrap support",
+                        values=c("black","darkgray","gray","lightgray")) +
+    guides(color = guide_legend(override.aes = list(size = 1))) 
+p + geom_point2(aes(subset = as.numeric(tx_bs)>99 & !isTip),size=1,color="red")
+dev.off()
+```
+
+
+```{r}
+#read metadata for tip labels
+treemeta<-read.csv("02_input_spongetree/treemeta.csv",row.names=1,stringsAsFactors = F,header=T)
+treemeta$DNAid<-rownames(treemeta)
+#drop metadata which absent from tree
+treemeta <-treemeta[(treemeta$DNAid  %in% tr$tip.label),]
+treemeta$WPDFamily<-as.factor(treemeta$WPDFamily); levels(treemeta$WPDFamily)
+treemeta$WPDOrder<-as.factor(treemeta$WPDOrder); levels(treemeta$WPDOrder)
+#treemeta$phyloOrder<-as.factor(treemeta$phyloOrder); levels(treemeta$phyloOrder)
+#treemeta$phyloFamily<-as.factor(treemeta$phyloFamily); levels(treemeta$phyloFamily)
+#treemeta$Species_consensus<-as.factor(treemeta$Species_consensus); levels(treemeta$Species_consensus)
+
+out<-c("Aurelia_aurita", "Capsaspora_owczarzaki", "Homo_sapiens", "Monosiga_brevicollis", "Salpingoeca_rosetta")
+treemeta<-treemeta[!(treemeta$DNAid %in% out),]
+
+
+
+
+
+
+treemeta.u<-treemeta[match(unique(treemeta$Species_consensus), treemeta$Species_consensus),]
+#treemeta$Species_consensus
+timetr<-keep.tip(tr,tip= treemeta.u$DNAid)
+bs_supp<-keep.tip(bs_supp,tip= treemeta.u$DNAid)
+tr1.lite<-keep.tip(tr1,tip= treemeta.u$DNAid) #prune sample-tree tips to one per species
+
+
+treemeta.u$phyloOrder<-factor(treemeta.u$phyloOrder,levels=names(colsC))
+#map metadata Order onto species time-tree, color same as for samples-tree
+phyOrdertips<-lapply(names(colsC),function(x) treemeta.u$DNAid[treemeta.u$phyloOrder ==x])
+
+groupedTree2<- groupOTU(timetr,phyOrdertips)
+pdf(paste0(outDir,"sptimetree_sampleCladeColors.pdf"),height=50)
+ggtree(groupedTree2, aes(color=group)) + geom_tiplab(size=1) + scale_color_manual(values=c("black",colsC))
+dev.off()
+
+```
+
+
+
+
+##Sponge tree, one tip per species
+Comparison of species-pruned-from-sample-supermatrix tree and species IQtree calibrated in Phylobayes.
+```{r cophyloplot, fig.height=12}
+
+
+#compare topologies
+trA<-tr1.lite;trB<-timetr
+trA$tip.label<-gsub(" ","_",trA$tip.label)
+trB$tip.label<-gsub(" ","_",trB$tip.label)
+
+cophyloWrap<-function(trA,trB){
+
+#rotate B using A
+ord<-setNames(1:length(trA$tip.label),trA$tip.label)
+trB<-minRotate(trB,ord)
+
+#rotate A using new B
+ord2<-setNames(1:length(trB$tip.label),trB$tip.label)
+ord2<-ord2[names(ord2) %in% trA$tip.label]
+trA<-tipRotate(trA,ord2,rotate.multi=TRUE)
+#final re-rotate B using new A
+ord3<-setNames(1:length(trA$tip.label),trA$tip.label)
+trB<-minRotate(trB,ord3)
+return(list(trA,trB))
+}
+
+rotatedtrees<-cophyloWrap(trA,trB)
+trA<-rotatedtrees[[1]]
+trB<-rotatedtrees[[2]]
+
+colsCbytip<-c()
+for (i in 1:length(trA$tip.label)){
+    ti<-treemeta[treemeta$DNAid==trA$tip.label[i],]
+    if (ti$phyloOrder %in% names(colsC)){
+  colsCbytip<-c(colsCbytip,colsC[ which(names(colsC)==ti$phyloOrder)])
+    } else{ colsCbytip<-c(colsCbytip,"gray")}
+    names(colsCbytip)[i]<-trA$tip.label[i] 
+}
+
+#creation of the association matrix for cophyloplot:
+association <- cbind(trA$tip.label, trA$tip.label)
+source("src/cophyloplotMSP.R")
+pdf(paste0(outDir,"sample_vs_species.cophylo.pdf"),height=40)
+cophyloplotMSP(trA,trB, assoc=association, space=100,gap=4,lwd=1,col=colsCbytip,use.edge.length = T,textcex=0.4)
+
+cophyloplotMSP(trA,trB, assoc=association, show.tip.label = F, space=200,gap=4,lwd=1,col=colsCbytip,use.edge.length = F,textcex=0.4)
+legend("topleft",names(colsC),col=colsC,bty="n",pch=15,cex=0.3)
+text(200,-20,"iqtree: tx-constrained sample/pruned")
+text(1000,-20,"iqtree: tx-constrained species/Time-calibrated")
+dev.off()
+```
+
+```{r color_phyloOrdersetup}
+
+treemeta.u$DNAid %in% timetr$tip.label
+timetr$tip.label %in% treemeta.u$DNAid
+treemeta.u<-treemeta.u[match(timetr$tip.label,treemeta.u$DNAid),]
+timetr$tip.label<-treemeta.u$Species_consensus
+
+#modify assignment for monophyly in species tree
+treemeta.u$phyloOrder[treemeta.u$Species_consensus == "Siphonochalina sp"]<-"Haplosclerida_A"
+treemeta.u$phyloOrder[treemeta.u$DNAid == "CU182"]<-"Haplosclerida_C"
+treemeta.u$phyloOrder[treemeta.u$DNAid == "BZ108"]<-"Haplosclerida_C"
+
+```
+
+```{r cladecolorassignFXN}
+#function looks for tip labels in Species_consensus column
+getCladeColors<-function(tr,metatreedat){
+  #test
+ #tr<-timetr
+  #metatreedat<-treemeta.u
+metatreedat<-metatreedat[metatreedat$Species_consensus %in% tr$tip.label,]
+grplist<-metatreedat %>% group_by(phyloOrder) %>% group_rows()
+tips_by_clade<-lapply(grplist,FUN=function(x) metatreedat$Species_consensus[unlist(x)])
+names(tips_by_clade)<-unlist(lapply(tips_by_clade,function(x) metatreedat$phyloOrder[metatreedat$Species_consensus==unlist(x[[1]])[1]]))
+
+singleO<-names(tips_by_clade)[which(lapply(tips_by_clade,length)==1)]
+singleOtips<-lapply(tips_by_clade[singleO],function(x) which(tr$tip.label==x))
+
+mrcas<-lapply(tips_by_clade,function(x) getMRCA(tr,unlist(x)))
+if("Capitella" %in% tr$tip.label){mrcas<-mrcas[names(tips_by_clade)!="NA"]  }#drops outgroup
+
+cladelist<-mrcas[lengths(mrcas) != 0] #drops any items rep'ing order with single tip
+
+cladelist2<-c(cladelist,singleOtips) #combine singles-tipnumber with clade-nodes
+#order cladelist by phylo so colors will follow.
+
+  #capture order of tips 
+  is_tip <- tr$edge[,2] <= length(tr$tip.label)
+  ordered_tips <- tr$edge[is_tip, 2]
+  Species_consensus<-tr$tip.label[rev(ordered_tips)]
+  phyloTipOrder<-1:length(Species_consensus)
+  spongeTreeTipOrder<-as.data.frame(cbind(Species_consensus,phyloTipOrder),stringsAsFactors=F)
+  metatreedat<-inner_join(metatreedat,spongeTreeTipOrder)
+ifelse("Capitella" %in% tr$tip.label, tp<-tips_by_clade[names(tips_by_clade)!="NA"], tp<-tips_by_clade)
+ord.ord<-unlist(lapply(tp,function(x) as.numeric(metatreedat$phyloTipOrder[metatreedat$Species_consensus==unlist(x[[1]])[1]])))
+ord.ord<-ord.ord[order(ord.ord)] #names(ord.ord) contains all phyloOrders, in order
+cladelist2<-cladelist2[names(ord.ord)]
+
+
+
+library(colorspace)
+
+cladelist<-cladelist2 #test to see if singles get colored
+colmat<-matrix(c(rainbow_hcl(ceiling(length(cladelist)/4),c=40,l=40),rainbow_hcl(ceiling(length(cladelist)/4),c=55,l=55),rainbow_hcl(ceiling(length(cladelist)/4),c=70,l=70),rainbow_hcl(ceiling(length(cladelist)/4),c=85,l=85)),byrow=T,ncol=ceiling(length(cladelist)/4))
+
+
+colsC<-c(colmat)[1:length(cladelist)]
+names(colsC)<-names(cladelist)
+#hcl_palettes()
+#library(scales);show_col(c(colmat))
+out<-list(cladelist,colsC,spongeTreeTipOrder);names(out)<-c("cladelist","colsC","spongeTreeTipOrder")
+return(out)
+}
+#use time-calibrated species tree 'timetr' with Species_consensus as tip label
+clademeta<-getCladeColors(timetr,treemeta.u)
+cladelist<-clademeta$cladelist
+cols<-clademeta$colsC
+
+```
+
+```{r plotTimeTree_OG}
+#pdf("test1.pdf",height=20);plot(timetr,cex=0.4); nodelabels(cex=0.5);dev.off()
+pdf(paste0(outDir,"Speciestree.pdf"),height=30)
+plot(timetr,cex=0.5); for (n in 1:length(cladelist)){nodelabels(node=unlist(cladelist[n]), text = names(cladelist)[n],frame="none",cex=0.5,col=cols[n])}
+
+    p2<-ggtree(timetr) + geom_tiplab(size=1) 
+for (i in 1:length(cladelist)){
+  p2 <- p2 + geom_hilight(cladelist[i], cols[i],extendto=2) + geom_cladelabel(cladelist[i],label=names(cladelist)[i],align=T,offset=0.2) 
+}
+p2  
+for (i in 1:length(cladelist)){
+  p2 <- p2 + geom_hilight(cladelist[i], cols[i]) + geom_cladelabel(cladelist[i],label=names(cladelist)[i],fontsize=1)
+}
+
+p2
+#save gg code for plottig div times
+#p2<-ggtree(timetr) + theme_tree2() + scale_x_continuous(labels = abs,breaks=c(seq(0,500,by=50)))
+#revts(p2) 
+
+p2<-ggtree(timetr,layout="circular")
+for (i in 1:length(cladelist)){
+ # p2 <- p2 + geom_hilight(cladelist[i], cols[i]) 
+   p2 <- p2 + geom_hilight(cladelist[i], cols[i]) + geom_cladelabel(cladelist[i],label=names(cladelist)[i],fontsize=3)
+}
+p2
+dev.off()
+#drop unneeded
+timetr<-drop.tip(timetr,tip=c("Nematostella vectensis", "Capitella","Demospongiae_spBMOO07491"))
+
+clademeta<-getCladeColors(timetr,treemeta.u)
+cladelist<-clademeta$cladelist
+cladecols<-clademeta$colsC
+tiporder<-clademeta$spongeTreeTipOrder
+
+treemeta.u<-left_join(treemeta.u,tiporder)
+treemeta.u<-treemeta.u[order(as.numeric(treemeta.u$phyloTipOrder)),]
+
+
+```
+
+```{r nodesupports_and_constraints}
+
+
+```
+
+
+## Tree annotation using World Porifera Database taxonomy.
+Note paraphyly of many Orders.
+```{r WPDannotation}
+
+# plot with WPD clade labels
+#order metadata by phylotip
+
+Ords<-unique(treemeta.u$WPDOrder); Ords<-Ords[!is.na(Ords)]; Ords<-Ords[!(Ords=="")]
+treemeta.u$WPDOrder<-factor(treemeta.u$WPDOrder,levels=Ords)
+colsO<-rainbow_hcl(length(Ords))
+names(colsO)<-Ords
+#library(scales);show_col(colsC)
+cols150<-c(rainbow_hcl(15, l=10,start = 10, end = 360),
+          rainbow_hcl(15, l=20,start = 10, end = 360),
+          rainbow_hcl(15, l=30,start = 10, end = 360),
+          rainbow_hcl(15, l=40,start = 10, end = 360),
+          rainbow_hcl(15, l=50,start = 10, end = 360), 
+          rainbow_hcl(15, l=60,start = 10, end = 360),
+          rainbow_hcl(15, l=70,start = 10, end = 360),
+          rainbow_hcl(15, l=80,start = 10, end = 360), 
+          rainbow_hcl(15, l=90,start = 10, end = 360),
+          rainbow_hcl(15, l=100,start = 10, end = 360))
+getPalette =colorRampPalette(cols150)
+
+Fams<-unique(treemeta.u$WPDFamily); Fams<-Fams[!is.na(Fams)]; Fams<-Fams[!(Fams=="")]
+treemeta.u$WPDFamily<-factor(treemeta.u$WPDFamily,levels=Fams)
+#colsF<-rainbow_hcl(length(Fams))
+colsF<-getPalette(length(Fams))
+names(colsF)<-Fams
+
+save(timetr,cladecols,cladelist,treemeta.u,colsO,colsF,file=paste0(outDir,"spongespeciesTimeTree.OGless.Rds"))
+
+ggmeta<-treemeta.u[,c("Species_consensus","DNAid","WPDOrder","WPDFamily")]
+#ggmeta[!(ggmeta$Species_consensus  %in% timetr$tip.label),]
+
+
+p<-ggtree(timetr,right=T)
+
+p %<+%  ggmeta +geom_tippoint(aes(color=WPDOrder)) + scale_color_manual(values=colsO) + theme(legend.position="top")
+pF<-p %<+% ggmeta +geom_tippoint(aes(color=WPDFamily)) + scale_color_manual(values=c("black",colsF),guide=guide_legend(ncol=4,title="Families")) 
+pF + theme(legend.position="none")
+pFl<- pF + theme(legend.position="top")
+library(cowplot)
+legend <- cowplot::get_legend(pFl); ggdraw(legend)
+
+```
+```{r plotcharacterTrees}
+chars<-read.csv("03_species_characters/chars_by_species.csv",header = T,stringsAsFactors = F) #1st column (NOT rownames) must match tip labels for ggtree
+
+#check that all tips in char dataset
+#tr.lite$tip.label<-gsub("_"," ",tr.lite$tip.label)
+timetr$tip.label[!(timetr$tip.label %in% chars$Species_consensus)]
+#chars$Species_consensus[!(chars$Species_consensus %in% tr.lite$tip.label)]
+
+
+p<-ggtree(timetr) 
+p %<+% chars + geom_tiplab(size=2,align=T,linesize = 0.1) + geom_tippoint(aes(color=EM_Gloeckner))  +  scale_color_manual(values=c(hma.col,lma.col))
+
+p %<+% chars + geom_tippoint(aes(color=consensusmod))  + geom_tiplab(size=2,align=T,linesize = 0.1) + scale_color_manual(values=c(hma.col,lma.col))
+
+```
+
+
+## Microbiome profiles by species
+
+```{r microheat, fig.height=8}
+cols32<-c(rainbow_hcl(8, l=30,start = 10, end = 300),
+          rainbow_hcl(8, l=50,start = 10, end = 300), 
+          rainbow_hcl(8, l=70,start = 10, end = 300), 
+          rainbow_hcl(8, l=90,start = 10, end = 300))
+getPalette =colorRampPalette(cols32)
+library(phyloseq)
+load("01_results/psRm_bySpecies.rds")
+
+#agglomerate taxa counts by phylum: run above already
+phylumGlommed = tax_glom(psRm, taxrank="Phylum")
+tax_table(phylumGlommed)[,"KP"]<-paste0(tax_table(phylumGlommed)[,"Kingdom"],"_",tax_table(phylumGlommed)[,"Phylum"])
+colourCount = length(unique(tax_table(phylumGlommed)[,"KP"])) 
+relabund.phy<- transform_sample_counts(phylumGlommed, function(OTU) OTU/sum(OTU))
+sample_sums(relabund.phy) #should all be 1
+#keep only phyla who account for over 1% of observations across species
+top.phyla.relabun<-prune_taxa(taxa_sums(relabund.phy)>0.01,relabund.phy)
+
+#instead of relative abund, try CLR transform for heatmap
+phylumGlommed.clr<-microbiome::transform(phylumGlommed, transform = "clr", target = "OTU", shift = 0, scale = 1)
+#hist(colSums(otu_table(phylumGlommed.clr)))
+
+#keep only phyla who account for over 1% of observations across species (CLR >~ -200)
+topPhyla<-tax_table(top.phyla.relabun)[,"Phylum"]
+top.phyla.clr<-prune_taxa(tax_table(phylumGlommed.clr)[,"Phylum"] %in% topPhyla,phylumGlommed.clr)
+phyla.counts<-data.frame(otu_table(top.phyla.clr))
+colnames(phyla.counts)<-tax_table(top.phyla.clr)[,"KP"]
+
+
+#keep only phyla which are important in RF classification
+#top.phyla.clr<-prune_taxa(tax_table(phylumGlommed.clr)[,"KP"] %in% rownames(imp.phy),phylumGlommed.clr)
+#phyla.counts<-data.frame(otu_table(top.phyla.clr))
+#colnames(phyla.counts)<-tax_table(top.phyla.clr)[,"KP"]
+
+
+shared<-timetr$tip.label[timetr$tip.label %in% sample_names(psRm)]
+tr.lite2<-keep.tip(timetr, shared)
+tipord<-get_taxa_name(ggtree(tr.lite2,right=T))
+
+
+#prune out samples to match treee
+top.phyla.relabun<-prune_samples(sample_names(top.phyla.relabun) %in% shared,top.phyla.relabun)
+#refacotr levels to match tree order on x axis
+sample_data(top.phyla.relabun)$Species_consensus<-factor(sample_data(top.phyla.relabun)$Species_consensus,levels=tipord)
+
+
+#recreate compositional plots, now ordered to match tree
+pbar<-plot_bar(top.phyla.relabun, x="Species_consensus", fill="KP") + scale_fill_manual(values = getPalette(colourCount))
+pbar  + theme(legend.position="none",axis.text=element_text(size=6)) 
+# extract Legend to plot below
+legend <- cowplot::get_legend(pbar); ggdraw(legend)
+
+unloadNamespace("microbiome");unloadNamespace("phyloseq")
+#ncol(phyla.counts)
+
+
+#CLR
+phyla.counts<-phyla.counts[tipord,]
+library(scales)
+heat.cols<-viridis_pal(option="A")(20)
+par(mar=c(1,1,20,1))
+ptree <- ggtree(tr.lite2,right=T) %<+% chars + geom_tiplab(offset=1, align=T, linesize=.1, size=2) + geom_tippoint(aes(color=consensusRF_class)) +scale_color_manual(values=c(hma.col,lma.col))
+# add heatmap
+gheatmap( ggtree(tr.lite2,right=T), phyla.counts, offset=0, width=1, low=heat.cols[5], high=heat.cols[15], colnames_position = "top", font.size=2,colnames_angle = 45,colnames_offset_y=0,hjust=0) +ggtitle("CLR scaled abundances of most predictive phyla")+ ylim(0,100)
+
+
+
+```
+
+Species tree: `r Ntip(timetr)`
+Species tree excluding species without microbiomes: `r Ntip(tr.lite2)`
+

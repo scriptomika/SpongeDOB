@@ -1,0 +1,638 @@
+---
+title: "Ancestral state recon"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide",fig.width = 8,fig.height=12)
+```
+
+
+```{r load}
+setwd("~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline3/")
+
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(phytools)
+library(diversitree)
+library(viridis)
+vp<-viridis_pal(option="D")(100)
+hma.col<-vp[20]; lma.col<-vp[80]
+library(colorspace)
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+```
+
+## ASR for HMA,LMA states on species phylogeny 
+
+- non-calibrated, *forced ultrametric*
+- time-calibrated chronogram
+
+Tips without microbial states known or predicted are removed, since the likelihood models perform perfom poorly with missing data (diversitree documentation).
+
+```{r loadregulartree,include=F}
+#loads non-time-calibrated tree
+tr<-(read.tree("02_input_spongetree/iqtree_species.parts.treefile.tre"))
+eumet<-getMRCA(tr,c("Capitella","Nematostella"))
+tr<-ladderize(root(tr,node=eumet)) #roots with eumetazoa outgroups
+tr<-drop.tip(tr,tip=c("Chalinula_molitba","SX209","Ircinia_fasciculata","KY089"))
+any(duplicated(tr$tip.label))
+#replace lab IDs with species names
+meta<-read.csv("02_input_spongetree/treemeta.csv",header=T,row.names=1)
+tr$tip.label[!(tr$tip.label %in% rownames(meta))] #outgroups missing OK
+tr<-drop.tip(tr,tip=c("Nematostella","Capitella")) #drop outgroups
+meta2<-meta[tr$tip.label,] #reorders to match tree tip order
+tr$tip.label<-meta2$Species_consensus
+tr$tip.label<-gsub("_"," ",tr$tip.label)
+
+any(duplicated(tr$tip.label))
+tr$tip.label[tr$tip.label=="Oscarella sp violet"]<-"Oscarella sp_violet"
+tr$tip.label[tr$tip.label=="Halichondria panicea sp1"]<-"Halichondria panicea_sp1"
+tr$tip.label[tr$tip.label=="Halichondria panicea sp2"]<-"Halichondria panicea_sp2"
+tr$tip.label[tr$tip.label=="Chondrilla caribensis forma hermatypica"]<-"Chondrilla caribensis_forma_hermatypica"
+
+
+```
+
+## Lineage through time on full time tree
+```{r loadtimetree,include=F}
+
+### load previous time-calib tree...
+load("spongespeciesTimeTree.OGless.Rds") #loads 'timetr', treemeta.u, cladelist&cladecols (==phylo clade colors),colsO & colsF (==WPD taxonomy colors)
+ctr<-timetr
+
+#match tip.labels to noncalibrated tree
+ctr$tip.label[!(ctr$tip.label %in% tr$tip.label)]
+tr$tip.label[!(tr$tip.label %in% ctr$tip.label)]
+#save(ctr, file="hosttr.Rds") not needed..note in later scripts
+ ctr$tip.label[ ctr$tip.label=="Plakortis sp_erylus"]<-"Plakortis sp erylus"
+ ctr$tip.label[ ctr$tip.label=="Verongula sp1_gigantea"]<-"Verongula sp1 gigantea"
+ ctr$tip.label[ ctr$tip.label=="Verongula sp2_reiswigi"]<-"Verongula sp2 reiswigi"
+ ctr$tip.label[ ctr$tip.label=="Verongula sp3_rigida"]<-"Verongula sp3 rigida"
+ ctr$tip.label[ ctr$tip.label=="Pandaros_raspailiinae"]<-"Pandaros raspailiinae"
+
+  ctr$tip.label[ ctr$tip.label=="Demospongiae_spBMOO07491"]<-"Demospongiae spBMOO07491"
+ ctr.u<-force.ultrametric(ctr,method="nnls")
+any(ctr.u$edge.length<=0)
+```
+
+```{r plotLTT,results="markdown",fig.height=6}
+ ltt<-ltt(ctr.u, log.lineages=F)
+cat(paste0("Pybus & Harvey gamma on big timetree: ",ltt$gamma,", p= ",ltt$p))
+#TODO: replace with post dist or bootstraps to run CI on lineage #s thru time
+#obj<-ltt95(trees,log=F)
+#plot(obj,xaxis="flipped")
+
+```
+
+```{r loadCharStates}
+load("species_charsRF.Rds") #loads 'char' with consensusRF column containing Random-Forest microbe state predictions
+#select which RF prediction to use (based on ASVs, phylum or class)
+consensusRF<-char$consensusRF_class
+
+#binarize
+char01<-consensusRF;names(char01)<-char$Species_consensus
+char01[char01=="HMA"]<-1; char01[char01=="LMA"]<-0; 
+char01<-setNames(as.numeric(char01), names(char01))
+
+#retain only species with nonNA characters ...Diversitree MLE performs poorly
+todrop<-names(char01)[is.na(char01)]
+char01.complete<-char01[!(is.na(char01))]
+
+#to do check if really missing data for all these species or if label mismatch
+tr$tip.label[!(tr$tip.label %in% names(char01.complete))]
+
+
+tokeep<-tr$tip.label[(tr$tip.label %in% names(char01.complete))]
+tr.complete<-keep.tip(tr,tip=tokeep)
+tokeep<-ctr$tip.label[(ctr$tip.label %in% names(char01.complete))]
+ctr.complete<-keep.tip(ctr,tip=tokeep)
+
+#drop any char entries not in tree
+char01.complete<-char01.complete[names(char01.complete) %in% tr.complete$tip.label]
+#char01<-char01[utr$tip.label] #sets char order to match tip label order
+length(char01.complete)==length(tr.complete$tip.label)
+
+#now both trees should have identical labels
+# & match char data
+ctr.complete$tip.label[!(ctr.complete$tip.label %in% tr.complete$tip.label)]
+tr.complete$tip.label[!(tr.complete$tip.label %in% ctr.complete$tip.label)]
+
+
+
+plot(tr.complete,cex=0.3,no.margin=F,main="Non-calibrated tree with states")
+#axisPhylo()
+tiplabels(tip=which(tr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(tr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+
+plot(ctr.complete,cex=0.3,no.margin=F,main="Calibrated tree with states")
+axisPhylo()
+tiplabels(tip=which(ctr.complete$tip.label %in%   names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+
+```
+
+
+```{r aceASR}
+#try on complete-taxa tree, without ultrametrizing branches
+fit.ace.er<-ace(as.factor(char01.complete),tr.complete,model="ER", type="discrete",marginal=F)
+fit.ace.ard<-ace(as.factor(char01.complete),tr.complete,model="ARD", type="discrete",marginal=F)
+# 
+ifelse(AIC(fit.ace.ard)<AIC(fit.ace.er),bestacemodel<-fit.ace.ard,bestacemodel<-fit.ace.er)
+aic<-as.matrix(sapply(list(ER=fit.ace.er,ARD=fit.ace.ard),AIC))
+print(aic)
+
+plot(tr.complete,cex=0.3,no.margin=F,main="Noncalibrated tree with ace ASR")
+tiplabels(tip=which(tr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(tr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(pie=bestacemodel$lik.anc,cex=0.5,piecol=c(lma.col,hma.col),cex=0.5)
+
+#compare with ultrametricized tree
+utr.complete<-force.ultrametric(tr.complete,method="nnls")
+any(utr.complete$edge.length<=0)
+utr.complete$edge.length[utr.complete$edge.length<=0]<-min(utr.complete$edge.length[utr.complete$edge.length>0])
+
+fit.ace.er<-ace(as.factor(char01.complete),utr.complete,model="ER", type="discrete",marginal=F)
+fit.ace.ard<-ace(as.factor(char01.complete),utr.complete,model="ARD", type="discrete",marginal=F)
+# 
+ifelse(AIC(fit.ace.ard)<AIC(fit.ace.er),bestacemodel<-fit.ace.ard,bestacemodel<-fit.ace.er)
+aic<-as.matrix(sapply(list(ER=fit.ace.er,ARD=fit.ace.ard),AIC))
+print(aic)
+
+plot(utr.complete,cex=0.3,no.margin=F,main="Noncalibrated (forced ultrametric) tree with ace ASR")
+tiplabels(tip=which(utr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(utr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(pie=bestacemodel$lik.anc,cex=0.5,piecol=c(lma.col,hma.col),cex=0.5)
+# 
+# compare with calibrated tree
+ctr.complete<-force.ultrametric(ctr.complete,method="nnls")
+any(ctr.complete$edge.length<=0)
+
+
+fit.ace.er2<-ace(as.factor(char01.complete),ctr.complete,model="ER", type="discrete",marginal=F)
+fit.ace.ard2<-ace(as.factor(char01.complete),ctr.complete,model="ARD", type="discrete",marginal=F)
+# 
+ifelse(AIC(fit.ace.ard2)<AIC(fit.ace.er2),bestacemodel<-fit.ace.ard2,bestacemodel<-fit.ace.er2)
+aic<-as.matrix(sapply(list(ER=fit.ace.er2,ARD=fit.ace.ard2),AIC))
+print(aic)
+
+plot(ctr.complete,cex=0.3,no.margin=F,main="Calibrated tree with ace ASR")
+axisPhylo()
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(pie=bestacemodel$lik.anc,cex=0.5,piecol=c(lma.col,hma.col),cex=0.5)
+```
+
+## ACE ASR on full trees (many tips missing character data)
+```{r incompletedata}
+#try on original large uncalibrated species tree and dataset with NAs
+
+tr$tip.label[!(tr$tip.label %in% names(char01))]
+
+#drop any char entries not in tree
+char01.match<-char01[names(char01) %in% tr$tip.label]
+#char01<-char01[utr$tip.label] #sets char order to match tip label order
+length(char01.match)==length(tr$tip.label)
+tr$edge.length[tr$edge.length==0]<-min(tr$edge.length[tr$edge.length>0])
+
+fit.ace.er<-ace(as.factor(char01.match),tr,model="ER", type="discrete",marginal=F)
+fit.ace.ard<-ace(as.factor(char01.match),tr,model="ARD", type="discrete",marginal=F)
+# 
+ifelse(AIC(fit.ace.ard)<AIC(fit.ace.er),bestacemodel<-fit.ace.ard,bestacemodel<-fit.ace.er)
+aic<-as.matrix(sapply(list(ER=fit.ace.er,ARD=fit.ace.ard),AIC))
+print(aic)
+
+
+plot(tr,"fan",cex=0.3,no.margin=F,main="Noncalibrated tree with ace ASR", align.tip.label = T)
+tiplabels(tip=which(tr$tip.label %in% names(char01.match)[char01.match==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(tr$tip.label %in% names(char01.match)[char01.match==1]),col=hma.col,pch=16,cex=1,frame="none")
+op <- par(fg = "transparent")
+nodelabels(pie=bestacemodel$lik.anc,piecol=c(lma.col,hma.col),cex=0.5)
+
+char.mat<-data.frame(to.matrix(char01.match,c("0","1")))
+char.mat[which(rowSums(char.mat)==0),1:2]<-c(NA,NA)
+names(char.mat)<-c("LMA","HMA")
+
+dat2<-data.frame(char01.match)
+names(dat2)<-"microbialState"
+trait.plot(ctr,type="f",dat=dat2,cols=list(microbialState=c(lma.col,hma.col)),lab=c("LMA","HMA"),cex.lab=0.1,legend=T, edge.width=0.1)
+nodelabels(pie=bestacemodel$lik.anc,piecol=c(lma.col,hma.col),cex=0.2)
+#todo plot trait legend
+#
+
+#try on calibrated, full tree
+ctr$tip.label[!(ctr$tip.label %in% names(char01.match))]
+char01.match2<-char01.match[(names(char01.match) %in% ctr$tip.label )]
+
+fit.ace.er<-ace(as.factor(char01.match2),ctr,model="ER", type="discrete",marginal=F)
+fit.ace.ard<-ace(as.factor(char01.match2),ctr,model="ARD", type="discrete",marginal=F)
+# 
+ifelse(AIC(fit.ace.ard)<AIC(fit.ace.er),bestacemodel<-fit.ace.ard,bestacemodel<-fit.ace.er)
+aic<-as.matrix(sapply(list(ER=fit.ace.er,ARD=fit.ace.ard),AIC))
+print(aic)
+
+plot(ctr,cex=0.3,no.margin=F,main="Calibrated tree with ace ASR")
+axisPhylo()
+tiplabels(tip=which(ctr$tip.label %in% names(char01.match2)[char01.match2==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr$tip.label %in% names(char01.match2)[char01.match2==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(pie=bestacemodel$lik.anc,cex=0.5,piecol=c(lma.col,hma.col),cex=0.5)
+#
+
+```
+
+
+```{r ASRsimmap_ace, echo=FALSE, eval=F}
+## ASR using SIMMAP (phytools)
+#-HMA vs LMA ancestral states
+char_tmp<-char[names(char) %in% utr$tip.label]
+length(char_tmp)==length(utr$tip.label)
+utr$tip.label[!(utr$tip.label %in% names(char))]
+
+char.mat<-to.matrix(char_tmp,c("HMA","LMA"))
+rowSums(char.mat)
+#replace empty (0,0) states with equally possible states; so rowsums==1
+char.mat[which(rowSums(char.mat)==0),1:2]<-c(0.5,0.5)
+nrow(char.mat)==length(utr$tip.label)
+# ace doesnt work ...
+# fit.ace<-ace(as.factor(char_tmp),utr,type="discrete",model="ER",marginal=FALSE)
+# 
+# plotTree(utr,mar=c(0.1,0.1,5.1,0.1),offset=0.5)
+# nodelabels(pie=fit.ace$lik.anc,cex=0.7)
+# #tiplabels(pie=to.matrix(char,seq=char.mat),cex=0.5)
+# 
+# asr.colors<-setNames(c(hma.col,lma.col),c("HMA","LMA"))
+
+#simmap allows uncertainty
+mappedtrees<-make.simmap(utr,char.mat,nsim=100,model="ER") #50 took 8 min
+# compute posterior probabilities at nodes & tips
+AA<-describe.simmap(mappedtrees,plot=TRUE)
+#plotSimmap(mappedtrees,colors=asr.colors,fsize=0.2)
+#http://blog.phytools.org/2015/11/describesimmap-when-summarizing-results.html
+#plot(btrees,lwd=1,ftype="off",colors=asr.colors)
+obj<-summary(mappedtrees)
+plot(obj,colors=asr.colors,fsize=0.2)
+add.simmap.legend(colors=asr.colors,x=5,y=3,prompt=FALSE)
+
+#instead, need to drop tips with emtpy state because elimates ASR power
+# char.mat<-to.matrix(char_tmp,c("HMA","LMA"))
+# todrop<-rownames(char.mat)[which(rowSums(char.mat)==0)]
+# utr.less<-drop.tip(utr, tip=todrop)
+# char.mat.less<-char.mat[utr.less$tip.label,]
+
+#simmap allows uncertainty
+# mappedtrees<-make.simmap(utr.less,char.mat.less,nsim=100,model="ER") #50 took 8 min
+# AA<-describe.simmap(mappedtrees,plot=TRUE)
+# obj<-summary(mappedtrees)
+# plot(obj,colors=asr.colors,fsize=0.2)
+# add.simmap.legend(colors=asr.colors,x=5,y=3,prompt=FALSE)
+
+```
+
+## Diversitree analysis of effect HMA/LMA state on host diversification rate
+
+#### Markov 2-state ASR 
+Estimate marginal likelihoods for ancestral states under simple Markov model using MCMC and compare to those under BiSSE model (and to ACE models above).  
+
+```{r markov_function,results="markdown"}
+## Mk2 ancestral state reconstructions, ignoring the shifts in
+## diversification rates:
+mcmclength<-10000
+runMarkov<-function(tree,char,strict){
+	#markov2 MLE alone
+  lik.m <- make.mk2(tree, char,strict=strict)
+  p <- starting.point.bisse(tree)
+  fit.m.u <- find.mle(lik.m, p[5:6],root=ROOT.FLAT, method="subplex")
+  cat("Markov estimates for LMA->HMA, HMA->LMA rates")
+  print(coef(fit.m.u))
+  st<- asr.marginal(lik.m, coef(fit.m.u))
+  
+    #intial mcmc
+	prior <- make.prior.exponential(1 / (2 * (p[1] - p[3])))
+	samples<- mcmc(lik.m, coef(fit.m.u), 1000, w=0.1, prior=prior, print.every=100)
+	w=diff(sapply(samples[2:3],quantile,c(0.05,0.95)))
+  	#Run the final MCMC
+    samples.m<-mcmc(lik.m,coef(fit.m.u),nsteps=mcmclength,w=w,prior=prior,print.every=1000)
+    st.m <- apply(samples.m[2:3], 1, function(x) asr.marginal(lik.m, x)[2,])
+  return(list(st=st,st.m=st.m,samples=samples.m))
+}
+```
+
+Markov on non-calibrated:
+```{r utr_mk2}
+markov<-runMarkov(utr.complete,char01.complete,strict=T)
+mk2st.u<-markov$st
+mk2st.u2<-markov$st.m
+
+plot(utr.complete,cex=0.3,main="MK2 MLE only, non-calibrated tree")
+tiplabels(tip=which(utr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(utr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(pie=t(mk2st.u), piecol=c(lma.col,hma.col), cex=.5)
+
+cat(" 95% credible intervals for MCMC on Markov model")
+#Now we can examine the 95% credible intervals of the posterior samples for each parameter. 
+ sapply(markov$samples[,2:3],quantile,c(0.025,0.975))
+st.m.avg <- rowMeans(mk2st.u2)
+
+plot(utr.complete,cex=0.3,main="MCMC marginals from Mk2, non-calibrated tree")
+nodelabels(pie=1-st.m.avg, piecol=c(lma.col,hma.col), cex=.5)
+```
+
+Markov on calibrated: 
+```{r mk2_ctr}
+markov<-runMarkov(ctr.complete,char01.complete,strict=T)
+mk2st.c<-markov$st
+mk2st.c2<-markov$st.m
+plot(ctr.complete,cex=0.3,main="MK2 MLE only, calibrated tree");axisPhylo()
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(pie=t(mk2st.c), piecol=c(lma.col,hma.col), cex=.5)
+
+cat(" 95% credible intervals for MCMC on Markov model")
+#Now we can examine the 95% credible intervals of the posterior samples for each parameter. 
+ sapply(markov$samples[,2:3],quantile,c(0.025,0.975))
+st.m.avg <- rowMeans(mk2st.c2)
+
+plot(ctr.complete,cex=0.3,main="MCMC marginals from Mk2, calibrated tree");axisPhylo()
+nodelabels(pie=1-st.m.avg, piecol=c(lma.col,hma.col), cex=.5)
+```
+
+
+
+
+#### BiSSE diversification and character evolution models
+
+Fit models:
+
+- Full, 6 parameter: character gain/loss and speciation & extinction rates for each character state
+- Reduced, 5 parameter: single speciation rate, regardless of character state
+- Reduced, 5 parameter: single extinction rate, regardless of character state
+
+Plot ASRs using marginal likelihoods from best fitting model.
+
+```{r bisse_function,results="markdown"}
+library(diversitree)
+library(hisse)
+#https://lukejharmon.github.io/ilhabela/2015/07/05/BiSSE-and-HiSSE/
+#https://www.zoology.ubc.ca/prog/diversitree/doc/diversitree-manual.pdf
+#https://wiki.duke.edu/pages/viewpage.action?pageId=131172442
+mcmclength<-10000 #replace wtih 10000 and rn overnight TODO
+
+runBisse<-function(tree,char,strict){
+  
+
+equation<-make.bisse(tree, char,strict=strict) # fits full model (6 params) using character state distribution
+ p <- starting.point.bisse(tree)
+
+fit <- find.mle(equation, p,method="subplex",root=ROOT.FLAT) #fit of full character model on tree
+#fit$lnLik
+#coef(fit)
+lik.l <- constrain(equation, lambda1 ~ lambda0) #alt model where speciation rate doesn't change depending on HMA-LMA state
+fit.l <- find.mle(lik.l, p[argnames(lik.l)],method="subplex")
+#fit.l$lnLik
+#round(rbind(full=coef(fit), equal.l=coef(fit.l, TRUE)), 3)
+#anova(fit, equal.l=fit.l) #compare full and constrained models
+#tests hypothesis that State0 (LMA) associated with rate increase (2x) compared to state1 (HMA)
+
+cat("Full model")
+print(coef(fit))
+cat("Constrained model--speciation not affected by character state")
+print(coef(fit.l))
+cat("ANOVA full vs constrained-lambda model")
+print(aov<-anova(fit, lambda.equal=fit.l))
+ifelse(aov$"Pr(>|Chi|)"[2]<0.05,bestmodel<-fit,bestmodel<-fit.l)
+bestmodel<-fit
+
+lik.2 <- constrain(equation, mu1 ~ mu0) #test that extiction rate doesn't change depending on HMA-LMA state
+fit.2<- find.mle(lik.2, p[argnames(lik.2)])
+
+cat("Full model")
+print(coef(fit))
+cat("Constrained model--extinction not affected by character state")
+print(coef(fit.2))
+cat("ANOVA full vs constrained-mu model")
+print(aov<-anova(fit, mu.equal=fit.2))
+
+# BiSSE MLE ASR 
+st <- asr.marginal(equation, coef(bestmodel))
+
+#run MCMC samples
+prior <- make.prior.exponential(1 / (2 * (p[1] - p[3])))
+initial <- mcmc(equation, bestmodel$par, 1000, w=0.1, prior=prior, print.every=100)
+
+#The tuning parameter for the final MCMC should be equal to approximately the width of the middle 90% of the posterior samples for each parameter value from the preliminary MCMC. We can calculate such a tuning parameter this way:
+ 
+     w=diff(sapply(initial[2:7],quantile,c(0.05,0.95)))
+  #Run the final MCMC
+ 
+     samples<-mcmc(equation,bestmodel$par,nsteps=mcmclength,w=w,prior=prior,print.every=1000)
+#extract ancestral state posteriors
+    st.b <- apply(samples[2:7], 1, function(x) asr.marginal(equation, x)[2,])
+return(list(samples=samples,st.b=st.b))
+}
+```
+
+##### Non-calibrated tree
+```{r utr_bisse,results="markdown"}
+if(!(file.exists("bisse_utr.Rds"))){
+	utr.bisse<-runBisse(utr.complete,char01.complete,strict=T)
+	utr.bisse.samples<-utr.bisse$samples
+	utr.bisse.st<-utr.bisse$st.b
+	save(utr.bisse.samples,utr.bisse.st,file="bisse_utr.Rds")
+	}else{load("bisse_utr.Rds")  }
+#Now we can examine the 95% credible intervals of the posterior samples for each parameter. If the intervals do not overlap, then we have posterior Bayesian support for a difference in rates
+ cat("95% CI for speciation, extinction and transition rates")
+sapply(utr.bisse.samples[,2:7],quantile,c(0.025,0.975))
+ 
+#The function above will print a table to your R window. The table of 95% credible intervals indicates that the intervals overlap for each state for speciation, extinction, and transition rate. Thus, we do not infer differences in any parameter that depends on the state of female dispersal.
+
+st.avg <- rowMeans(utr.bisse.st)
+plot(utr.complete,cex=0.3,main="MCMC marginals from BiSSE model (noncalibrated tree)")
+nodelabels(pie=1-st.avg, piecol=c(lma.col,hma.col), cex=.5)
+nodelabels(pie=1-st.avg, piecol=c(lma.col,hma.col), cex=.5)
+tiplabels(tip=which(utr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(utr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+```
+```{r profilesUtr, fig.height=6}
+#plot speciation rates according to char state
+par(mar=c(5,5,1,1))
+names(utr.bisse.samples)[2:3]<-c("LMA_l","HMA_l")
+profiles.plot(utr.bisse.samples[c("LMA_l", "HMA_l")], col.line=c(lma.col,hma.col), las=1, xlab="Speciation rate (lamda)", legend="topright")
+
+names(utr.bisse.samples)[4:5]<-c("LMA_m","HMA_m")
+profiles.plot(utr.bisse.samples[c("LMA_m", "HMA_m")], col.line=c(lma.col,hma.col), las=1, xlab="Extinction rate (mu)", legend="topright")
+
+```
+
+##### Calibrated tree
+
+```{r ctr_bisse,results="markdown"}
+if(!(file.exists("bisse_ctr.Rds"))){
+	ctr.bisse<-runBisse(ctr.complete,char01.complete,strict=T)
+	ctr.bisse.samples<-ctr.bisse$samples
+	ctr.bisse.st<-ctr.bisse$st.b
+	save(ctr.bisse.samples,ctr.bisse.st,file="bisse_ctr.Rds")
+}else{load("bisse_ctr.Rds")  }
+#plot(ctr.bisse.samples$i, ctr.bisse.samples$p, type="l", xlab="generation", ylab="log(L)")
+#colMeans(ctr.bisse.samples)[2:ncol(ctr.bisse.samples)]
+#Now we can examine the 95% credible intervals of the posterior samples for each parameter. If the intervals do not overlap, then we have posterior Bayesian support for a difference in rates
+ cat("95% CI for speciation, extinction and transition rates")
+sapply(ctr.bisse.samples[,2:7],quantile,c(0.025,0.975))
+ 
+#The function above will print a table to your R window. The table of 95% credible intervals indicates that the intervals overlap for each state for speciation, extinction, and transition rate. Thus, we do not infer differences in any parameter that depends on the state of female dispersal.
+
+st.avg <- rowMeans(ctr.bisse.st)
+plot(ctr.complete,cex=0.3,main="MCMC marginals from BiSSE model (calibrated tree)"); axisPhylo()
+nodelabels(pie=1-st.avg, piecol=c(lma.col,hma.col), cex=.5)
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+```
+```{r profilesCtr, fig.height=6}
+#plot speciation rates according to char state
+par(mar=c(5,5,1,1))
+names(ctr.bisse.samples)[2:3]<-c("LMA_l","HMA_l")
+profiles.plot(ctr.bisse.samples[c("LMA_l", "HMA_l")], col.line=c(lma.col,hma.col), las=1, xlab="Speciation rate (lamda)", legend="topright")
+
+names(ctr.bisse.samples)[4:5]<-c("LMA_m","HMA_m")
+profiles.plot(ctr.bisse.samples[c("LMA_m", "HMA_m")], col.line=c(lma.col,hma.col), las=1, xlab="Extinction rate (mu)", legend="topright")
+
+#Net diversification plot
+
+net.div<-ctr.bisse.samples[,c("LMA_l","HMA_l")]-
+    ctr.bisse.samples[,c("LMA_m","HMA_m")]
+colnames(net.div)<-paste("lambda-mu(",c("LMA","HMA"),")",sep="")
+profiles.plot(net.div, 
+    xlab="Net diversification rate", ylab="Probability density",
+    legend.pos="topleft",col.line=c(lma.col,hma.col),
+    lty=1)
+sapply(net.div[,1:2],quantile,c(0.025,0.975))
+
+```
+
+
+
+##Lineages-thru-time for each state
+Using mean marginal likelihood states from BiSSE full `r mcmclength` MCMC samples.
+
+```{r tttfunc,results="markdown",fig.height=6}
+
+plot_traits_thru_time<-function(phy,ASR01,tipchar01,colors01){
+
+edges<-data.frame(phy$edge);colnames(edges)<-c("anc","desc")
+
+parentstates<-cbind(ASR01,(Ntip(phy)+1):(Ntip(phy)+Nnode(phy)));#colnames(parentstates)<-c("state.p","nodenum")
+
+tipstates<-cbind(tipchar01[phy$tip.label],1:Ntip(phy));#colnames(tipstates)<-c("state.t","tipnum")
+
+allstate<-data.frame(rbind(tipstates,parentstates));colnames(allstate)<-c("state","num");rownames(allstate)<-NULL
+
+compar<-c()
+for (r in 1:nrow(edges)){
+  compar<-c(compar,allstate$state[edges$anc[r]],allstate$state[edges$desc[r]])
+}
+ancdesc_states<-matrix(compar,ncol=2,byrow = T)
+edgestates<-data.frame(cbind(edges,ancdesc_states))
+edgestates<-edgestates[order(edgestates$anc),]
+cat("Number of LMA->HMA events")
+gains<-which(edgestates$X1==0 &edgestates$X2==1)
+print(length(gains))
+cat("Number of HMA->LMA events")
+losses<-which(edgestates$X1==1 &edgestates$X2==0)
+print(length(losses))
+
+
+
+#ltt.plot(ctr.complete)
+pltt<-ltt.plot.coords(phy)
+plot.default(pltt, xlab = "Time", ylab = "N lineages", xaxs = "r", yaxs = "r",  type = "S",lwd=3)
+
+#phenogram(phy,tipchar01)
+library(dplyr)
+anc<-unique(edgestates$anc)
+nodetimes<-data.frame(cbind(anc, pltt[1:Nnode(phy),1]))
+edgestates<-left_join(edgestates,nodetimes);colnames(edgestates)<-c("anc","desc","as","ds","nodetimes")
+edgestates<-edgestates[order(edgestates$nodetimes),]
+
+nodeage<-pltt[1:Nnode(phy),1]
+nodestate_age<-as.data.frame(cbind(parentstates,nodeage))
+htally<-ltally<-0; hcum<-lcum<-c()
+for (r in 1:nrow(nodestate_age)){
+  if(nodestate_age$ASR01[r]==0) {
+    ltally<-1+ltally
+    lcum<-c(lcum,ltally);hcum<-c(hcum,htally)
+    }
+  if(nodestate_age$ASR01[r]==1 ){
+    htally<-1+htally
+    hcum<-c(hcum,htally);lcum<-c(lcum,ltally)
+    }
+}
+#tally tips which shifted from MR ancestral state
+termEdges<-edgestates[which(edgestates$desc %in% 1:Ntip(phy)),]
+l2htips<-termEdges[which(termEdges$as<termEdges$ds),]
+h2ltips<-termEdges[which(termEdges$as>termEdges$ds),]
+#not sure where to place, in time, so omit 
+
+xy<-as.data.frame(cbind(nodestate_age,lcum,hcum)); xy<-xy[order(xy$nodeage),]
+xyL<-xy[,c("nodeage","lcum")] 
+xyH<-xy[,c("nodeage","hcum")]
+
+
+#plot.default(xyL, xlab = "Time", ylab = "N lineages", xaxs = "r", yaxs = "r", type = "S",xlim=c(-560,0),ylim=c(0,170),col=lma.col,lwd=3)
+lines(xyL, xlab = "Time", ylab = "N lineages", xaxs = "r", yaxs = "r", 
+        type = "S",col=colors01[1],lwd=3)
+
+lines(xyH, xlab = "Time (MYBP)", ylab = "Number lineages", xaxs = "r", yaxs = "r", 
+        type = "S",xlim=c(-560,0),ylim=c(0,170),col=colors01[2],lwd=3)
+legend("topleft",legend=c("LMA","HMA"),text.col=colors01,bty="n")
+return(list(edgestates,gains, losses))
+}
+
+#to use Mk2 marg likelihood estimates
+nodeMLstate<-unlist(lapply(st.m.avg,function(x) (ifelse(x<0.5,0,1))))
+cat("Using Mk2 model (MCMC) to infer ASR")
+eventsMk<-plot_traits_thru_time(ctr.complete,nodeMLstate,char01.complete,c(lma.col,hma.col))
+title("Using Mk2 model (MCMC) to infer ASR")
+
+#to use BiSSE MCMC marginals
+cat("Using BiSSE model (MCMC) to infer ASR")
+nodeMLstate<-unlist(lapply(st.avg,function(x) (ifelse(x<0.5,0,1))))
+events<-plot_traits_thru_time(ctr.complete,nodeMLstate,char01.complete,c(lma.col,hma.col))
+title("Using BiSSE model (MCMC) to infer ASR")
+```
+```{r annotEvents}
+edges<-events[[1]]
+gains<-unlist(events[2])
+losses<-unlist(events[3])
+plot(ctr.complete,cex=0.3,main="MCMC marginals from BiSSE model (calibrated tree)"); axisPhylo()
+nodelabels(pie=1-st.avg, piecol=c(lma.col,hma.col), cex=.5)
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodelabels(node=edges$desc[gains],pch=1,lty=1,cex=3,col=hma.col)
+nodelabels(node=edges$desc[losses],pch=1,lty=1,cex=3,col=lma.col)
+
+
+plot(ctr.complete,cex=0.3,main="MCMC marginals from BiSSE model (calibrated tree)"); axisPhylo()
+nodelabels(pie=1-st.avg, piecol=c(lma.col,hma.col), cex=.5)
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+nodegain<-edges$desc[gains][edges$desc[gains]>Ntip(ctr.complete)]
+if(length(nodegain)>0){
+  nodelabels(node=nodegain,text=ctr.complete$node.label[nodegain-Ntip(ctr.complete)],col=hma.col)
+}
+nodeloss<-edges$desc[losses][edges$desc[losses]>Ntip(ctr.complete)]
+if(length(nodeloss)>0){
+
+nodelabels(node=nodeloss,text=ctr.complete$node.label[nodeloss-Ntip(ctr.complete)],col=lma.col,cex=0.5,bg="white")
+}
+
+```
+

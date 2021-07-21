@@ -1,0 +1,371 @@
+---
+title: "Subtraction of seawater ASVs from sponge microbial counts"
+output: 
+  html_document:
+  toc: true
+toc_float: true
+collapsed: false
+toc_depth: 4
+df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,fig.width = 8, results="markdown")
+options(scipen = 999)
+```
+
+
+```{r load, echo=FALSE, include=FALSE} 
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"06_swadj_results/"
+ifelse(!dir.exists(file.path(mainDir, outDir)), dir.create(file.path(mainDir, outDir)), FALSE)
+library(phyloseq,warn.conflicts = FALSE)
+library(reshape2)
+library(ape)
+#inputs: 
+# - either: ps4.rds or ps.adj.RDS
+# - species_charsRF.Rds
+
+#outputs: 
+# ps.adj.RDS (only if starting with ps4)    -seawater-normalised counts for each sample
+# ps.adj.hostspecies.counts.RDS             -seawater-normalised counts for merged by species (not rarefied)
+# ps.adj.hostspecies.ra.RDS                     -seawater-normalised relative abundance for merged by species (after count rarefaction)
+options(getClass.msg=FALSE)
+```
+```{r subtract,echo=FALSE, include=FALSE}
+if(file.exists(paste0(outDir,"ps.adj.RDS"))){load(paste0(outDir,"ps.adj.RDS")) #loads previously-made ps.adj with seawater-corrected counts
+  
+}else{
+  load("01_results/ps4.rds")
+  
+  #sort sample_data(ps4) to mirror sponge phylogeny
+  df<-data.frame(sample_data(ps4)[order(as.numeric(sample_data(ps4)$phyloTreeRank))])
+  df<-df[df$X!="",];df<-df[df$X!="#N/A",]
+  df<-df[order(as.numeric(as.character(df$X))),]
+  Species.order<-c(as.character(unique(df$Species_consensus)),"seawater","sediment")
+  Genera.order<-unique(df$phyloGenus)
+  Family.order<-unique(df$phyloFamily)
+  Order.order<-unique(df$phyloOrder)
+  
+  #seawater taxa--use abundance to normalize abundance in sponges?
+  # for each ASV in seawater- calc relative abundance
+  # calc expected number of counts for this ASV in each sample due to seawater contribution
+  # subtract: observed - expected, if negative, set to 0.
+  ps4.sw<-prune_samples(sample_data(ps4)$Species_consensus=="seawater",ps4)
+  pssw.m<-merge_samples(ps4.sw,"locale",sum)
+  pssw.m<-prune_taxa(taxa_names(pssw.m)[which(taxa_sums(pssw.m)>0)],pssw.m)
+  pssw.m.ra <- transform_sample_counts(pssw.m, function(OTU) OTU/sum(OTU)) #convert to relative abundance
+  head(otu_table(pssw.m.ra)[,1:10])
+  
+  subtractSWcounts<-function(loc,ps.seawater_by_loc.ra,psobject)
+  {
+    loc.sw.ra<-data.frame(otu_table(ps.seawater_by_loc.ra)[loc,]); loc.sw.ra<-loc.sw.ra[which(loc.sw.ra>0)]
+    loc.samp<-prune_samples(sample_data(psobject)$locale==loc,psobject)
+    loc.samp<-prune_samples(sample_data(loc.samp)$Species_consensus!="seawater",loc.samp)
+    loc.samp<-prune_taxa(taxa_names(loc.samp)[which(taxa_sums(loc.samp)>0)],loc.samp)
+    locCounts<-data.frame(otu_table(loc.samp)); dim(locCounts)
+    locCountsSW<-locCounts[colnames(loc.sw.ra),]; dim(locCountsSW)
+    locCounts_rest<-locCounts[!(rownames(locCounts) %in% rownames(locCountsSW)),];dim(locCounts_rest)
+    adjusted<-apply(t(locCountsSW), 1, FUN= function(x) x-(colSums(locCounts)*loc.sw.ra) )
+    adjusted<-do.call(rbind,adjusted)
+    adjusted[adjusted<0]<-0
+    adjusted<-t(adjusted); dim(adjusted)
+    adjCounts <-rbind(locCounts_rest,adjusted); dim(adjCounts)
+    return(adjCounts)
+  }
+  BZadjCounts<-subtractSWcounts("BZ",pssw.m.ra,ps4); BZadjCounts<-t(BZadjCounts); samp<-rownames(BZadjCounts); BZadjCounts<-cbind.data.frame(samp,BZadjCounts,stringsAsFactors=F)
+  CUadjCounts<-subtractSWcounts("CU",pssw.m.ra,ps4); CUadjCounts<-t(CUadjCounts); samp<-rownames(CUadjCounts); CUadjCounts<-cbind.data.frame(samp,CUadjCounts,stringsAsFactors=F)
+  KYadjCounts<-subtractSWcounts("KY",pssw.m.ra,ps4); KYadjCounts<-t(KYadjCounts); samp<-rownames(KYadjCounts); KYadjCounts<-cbind.data.frame(samp,KYadjCounts,stringsAsFactors=F)
+  SXadjCounts<-subtractSWcounts("SX",pssw.m.ra,ps4); SXadjCounts<-t(SXadjCounts); samp<-rownames(SXadjCounts); SXadjCounts<-cbind.data.frame(samp,SXadjCounts,stringsAsFactors=F)
+  
+  #merge site-ajusted counts in to one table:
+  m1<-merge(BZadjCounts,CUadjCounts,all=T); dim(m1); dim(BZadjCounts); dim(CUadjCounts)
+  m1<-merge(m1,KYadjCounts,all=T); dim(m1); dim(KYadjCounts)
+  m1<-merge(m1,SXadjCounts,all=T); dim(m1); dim(SXadjCounts)
+  
+  swdf<-t(data.frame(otu_table(ps4.sw))); dim(swdf);samp<-rownames(swdf); swdf<-cbind.data.frame(samp,swdf,stringsAsFactors=F)
+  m2<-merge(m1,swdf,all=T); dim(m2)
+  m2$samp<-gsub("\\.","-",m2$samp)
+  
+  rownames(m2)<-m2$samp; m3<-m2[,-1]
+  m3[is.na(m3)]<-0
+  
+  
+  rownames(m3) %in% sample_names(ps4)
+  colnames(m3) %in% taxa_names(ps4)
+  taxa_names(ps4)[!(taxa_names(ps4) %in% colnames(m3))]; colnames(m3)[!(colnames(m3) %in% taxa_names(ps4) )]
+  #create phyloseq object with sw-adjusted sponge counts
+  
+  ps.adj<-phyloseq(otu_table(as.matrix(m3),taxa_are_rows=F),sample_data(ps4),tax_table(ps4))
+  sample_sums(ps.adj)
+  hist(sample_sums(ps.adj), breaks=100)
+  
+  save(ps.adj,file=paste0(outDir,"ps.adj.RDS"))
+}
+
+if(!file.exists("ps.adj.hostspecies.counts.RDS")){
+
+#merge samples by species
+#sample_sums(ps.adj)
+ps.adj<-prune_samples(sample_data(ps.adj)$Species_consensus!="",ps.adj) 
+
+ps.adj.hostspecies<-merge_samples(ps.adj,"Species_consensus") 
+sample_data(ps.adj.hostspecies)$Species_consensus<-as.factor(sample_names(ps.adj.hostspecies)) #repair factor levels
+
+set.seed(1234)
+#look at species with lowest counts
+#sort(sample_sums(ps.adj.hostspecies), F)[1:10]
+#sample_data(ps.adj) %>% group_by(Species_consensus) %>% count()  %>% print(n = Inf)
+ps.adj.hostspecies<-rarefy_even_depth(ps.adj.hostspecies)#repeat normalization because PhyloSeq sums reads across merged samples
+ps.adj.hostspecies<-prune_taxa(taxa_sums(ps.adj.hostspecies)>0,ps.adj.hostspecies)
+
+#sample_data(ps.adj.hostspecies)$phyloFamily <- levels(sample_data(ps.adj)$phyloFamily)[get_variable(ps.adj.hostspecies,"phyloFamily")]
+#sample_data(ps.adj.hostspecies)$phyloOrder <- levels(sample_data(ps.adj)$phyloOrder)[get_variable(ps.adj.hostspecies,"phyloOrder")]
+#sample_data(ps.adj.hostspecies)$phyloGenus <- levels(sample_data(ps.adj)$phyloGenus)[get_variable(ps.adj.hostspecies,"phyloGenus")]
+#sample_data(ps.adj.hostspecies)$phylosubClass <- levels(sample_data(ps.adj)$phylosubClass)[get_variable(ps.adj.hostspecies,"phylosubClass")]
+#sample_data(ps.adj.hostspecies)$phyloClass <- levels(sample_data(ps.adj)$phyloClass)[get_variable(ps.adj.hostspecies,"phyloClass")]
+
+#replace sample_data with character and phylo info
+load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #timetr #treemeta.u
+#species phylo-ordered
+
+timetr.dob<-keep.tip(timetr,tip=timetr$tip.label [timetr$tip.label %in% sample_names(ps.adj.hostspecies)])
+p<-ggtree::ggtree(timetr.dob,right=T)
+Species.order<-c(ggtree::get_taxa_name(p),"seawater","sediment")
+
+ps.adj.hostspecies<-prune_samples(Species.order,ps.adj.hostspecies)
+sample_data(ps.adj.hostspecies)$Species_consensus<- factor(sample_data(ps.adj.hostspecies)$Species_consensus, levels = Species.order)
+dat1<-data.frame(sample_data(ps.adj.hostspecies))
+
+#head(dat1); tail(dat1)
+
+load("03_char_results/species_charsRF.Rds") #use char$consensusRF_phyla
+library(dplyr)
+dat2<-left_join(dat1,char, by=c("Species_consensus"))
+
+dat2<-dat2 %>% select(Species_consensus,consensusmod,consensusRF_asv,consensusRF_class,consensusRF_phyla)
+dat2$RFprediction<-dat2$consensusRF_phyla
+
+
+dat3<-left_join(dat2,treemeta.u); rownames(dat3)<-dat3$Species_consensus
+sample_data(ps.adj.hostspecies)<-dat3
+
+ps.adj.hostspecies<-prune_taxa(taxa_sums(ps.adj.hostspecies)>0,ps.adj.hostspecies)
+
+
+save(ps.adj.hostspecies,file=paste0(outDir,"ps.adj.hostspecies.counts.RDS"))
+
+
+ps.adj.hostspecies.ra<-transform_sample_counts(ps.adj.hostspecies, function(x) x / sum(x))
+sample_data(ps.adj.hostspecies.ra)$Species_consensus<-factor(sample_names(ps.adj.hostspecies.ra),levels=Species.order) #repair factor levels
+sample_sums(ps.adj.hostspecies.ra)
+ntaxa(ps.adj.hostspecies.ra)
+nsamples(ps.adj.hostspecies.ra)
+
+save(ps.adj.hostspecies.ra,file=paste0(outDir,"ps.adj.hostspecies.ra.RDS"))
+
+
+#comparison original non-adjusted counts:
+
+
+}else{ load(paste0(outDir,"ps.adj.hostspecies.counts.RDS"))} #ps.adj.hostspecies
+```
+
+### Composition of all species, before and after SW subtraction
+```{r comparisons1,echo=FALSE, include=FALSE}
+  load("01_results/psRm_bySpecies.rds") #psRm
+  load("01_results/microColors.rds") #commonphyla_colors,commonclass_colors
+  load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #timetr
+ library(ape)
+  psRm<-prune_samples(sample_names(psRm) %in% timetr$tip.label,psRm)
+  psRm.ra<-transform_sample_counts(psRm, function(x) x / sum(x))
+ ps.adj.hostspecies<-prune_samples(sample_names(ps.adj.hostspecies) %in% timetr$tip.label,ps.adj.hostspecies)
+ ps.adj.hostspecies<-prune_taxa(taxa_sums(ps.adj.hostspecies)>0, ps.adj.hostspecies)
+   
+  
+  
+#determine what top phyla are shared
+ top <- names(sort(taxa_sums(ps.adj.hostspecies), decreasing=TRUE))[1:3000]
+  sum(taxa_sums(ps.adj.hostspecies)[top])/sum(taxa_sums(ps.adj.hostspecies))
+  topnames.adj<-as(unique(tax_table(ps.adj.hostspecies)[top,"KP"]),"vector")
+  orignames<-names(commonphyla_colors)[!(names(commonphyla_colors) %in% topnames.adj)]
+  adjnames<-topnames.adj [!(topnames.adj  %in% names(commonphyla_colors) )]
+```
+FOr both origial and SW-corrected data, top 3000 most abundant ASVs include members of:
+`r intersect(topnames.adj,names(commonphyla_colors))`
+
+Original counts also include members of `r orignames`.
+
+SW-corrected counts find ASVs from `r adjnames` to be more abundant:
+
+
+```{r comparebars}
+topglom_order_ra<-function(ps,tree,topnames,glomRank) {
+  # tree<-timetr;topnames<-names(commonphyla_colors);glomRank<-"Phylum";ps<-ps.adj.hostspecies
+  
+  top <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:3000]
+  ps.top <- prune_taxa(top, ps)
+  
+ #glom
+  glom<-tax_glom(ps.top,taxrank=glomRank)
+  if(glomRank=="Phylum"){tax_table(glom)[,"KP"]<-paste0(tax_table(glom)[,"Kingdom"],"_",tax_table(glom)[,"Phylum"])}
+  if(glomRank=="Class"){tax_table(glom)[,"KPC"]<-paste0(tax_table(glom)[,"Kingdom"],"_",tax_table(glom)[,"Phylum"],"_",tax_table(glom)[,"Class"])}
+  
+  psra<-transform_sample_counts(glom, function(x) x / sum(x))
+  sample_data(psra)$Species_consensus<-as.factor(sample_names(psra)) #repair factor levels
+  
+ 
+  #species phylo-ordered
+  timetr.dob<-keep.tip(tree,tip=tree$tip.label [tree$tip.label %in% sample_names(psra)])
+  p<-ggtree::ggtree(timetr.dob,right=T)
+  sample_data(psra)$Species_consensus<- factor(sample_data(psra)$Species_consensus, levels = ggtree::get_taxa_name(p))
+  return(psra)
+}
+```
+
+```{r bars}
+library(colorspace)
+glomA<-topglom_order_ra(ps.adj.hostspecies,timetr,names(commonphyla_colors),"Phylum")
+glomO<-topglom_order_ra(psRm,timetr,names(commonphyla_colors),"Phylum")
+library(ggplot2)
+   # PHYLUM: due to size, plot bars and legend separately
+  pbarO<-plot_bar(glomO, x="Species_consensus", fill="KP")  + scale_fill_manual(values = commonphyla_colors) + guides(fill=guide_legend(ncol=2))
+  pbarO  + ggtitle("Relative abundance of 3000 most common ASVs (by PHYLUM on original counts)") + theme(legend.position="none",axis.text=element_text(size=6))
+   # extract Legend to plot below
+  legend <- cowplot::get_legend(pbarO); cowplot::ggdraw(legend)
+ 
+  cols32<-c(rainbow_hcl(8, l=30,start = 10, end = 300),
+          rainbow_hcl(8, l=50,start = 10, end = 300), 
+          rainbow_hcl(8, l=70,start = 10, end = 300), 
+          rainbow_hcl(8, l=90,start = 10, end = 300))
+  adjcols<-c(cols32[!(cols32 %in% commonphyla_colors)][1:length(adjnames)], commonphyla_colors[names(commonphyla_colors) %in% topnames.adj ]);
+  names(adjcols)[1:length(adjnames)]<-adjnames
+  pbarA<-plot_bar(glomA, x="Species_consensus", fill="KP")  + scale_fill_manual(values = adjcols) + guides(fill=guide_legend(ncol=2))
+  pbarA  + ggtitle("Relative abundance of 3000 most common ASVs (by PHYLUM on SW-corrected counts)") + theme(legend.position="none",axis.text=element_text(size=6))
+  
+  # extract Legend to plot below
+
+   legend <- cowplot::get_legend(pbarA); cowplot::ggdraw(legend)
+  
+
+  psaH3<-prune_samples(sample_data(glomA)$RFprediction=="HMA",glomA)
+  psaL3<-prune_samples(sample_data(glomA)$RFprediction=="LMA",glomA)
+  
+  psoH3<-prune_samples(sample_names(psaH3),glomO)
+  psoL3<-prune_samples(sample_names(psaL3),glomO)
+  
+```
+
+### Composition of HMA and LMA species, SW-corrected
+```{r barplots}
+# pdf(paste0(outDir,"fig2_barplots.pdf"))
+  p.ha<-plot_bar(psaH3, x="Species_consensus", fill="KP") +    scale_fill_manual(values = adjcols)
+  p.ha  + theme(legend.position="none",axis.text=element_text(size=6)) 
+  p.la<-plot_bar(psaL3, x="Species_consensus", fill="KP") +    scale_fill_manual(values = adjcols)
+  p.la  + theme(legend.position="none",axis.text=element_text(size=6)) 
+  
+   # extract Legend to plot below
+  legend <- cowplot::get_legend(p.la); cowplot::ggdraw(legend)
+ # dev.off()
+```
+
+
+```{r anosim}
+library(vegan)
+#test whether distances within group less than differences between groups
+ano<-vegan::anosim(otu_table(ps.adj.hostspecies),sample_data(ps.adj.hostspecies)$RFprediction)
+
+ano
+#test whether distance differs btween groups
+dist<-phyloseq::distance(ps.adj.hostspecies,method="bray")
+samp<-as(sample_data(ps.adj.hostspecies),"data.frame")
+ado<-adonis(dist ~ RFprediction,data=samp,permutations = 9999)
+ado
+# Homogeneity of dispersion test
+beta <- betadisper(dist, samp$RFprediction)
+bperm<-permutest(beta)
+TukeyHSD(beta)
+
+```
+ANOSIM finds LMA and HMA are compositionally distinct (ASV abundances):
+R= `r ano$statistic`, p= `r ano$signif`. 
+Simlilarly, PERMANOVA finds signficantly different composititon:F=`r ado$aov.tab$F.Model[1]`,R2=`r ado$aov.tab$R2[1]`,p=`r ado$aov.tab$ "Pr(>F)"[1]`.
+
+And testing homogeneity of dispersion finds that LMA sponges are signifcantly more variable in composition than HMA: F=`r bperm$statistic`,p=`r bperm$tab$ "Pr(>F)"[1]`.
+
+### Effect of SW correction on abundances of common phyla  
+```{r comparisons, results="markdown"}
+
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+
+  orig.ra<-apply(otu_table(glomO),2,mean)
+  names(orig.ra)<-tax_table(glomO)[,"KP"]
+  adj.ra<-apply(otu_table(glomA),2,mean)
+  names(adj.ra)<-tax_table(glomA)[,"KP"]
+  adj.ra<-adj.ra[names(orig.ra)]
+  comparison<-cbind.data.frame(orig.ra,adj.ra)
+  comparison$KP<-names(orig.ra)
+  
+  
+  orig.ra.l<-apply(otu_table(psoL3),2,mean)
+names(orig.ra.l)<-tax_table(psoL3)[,"KP"]
+orig.ra.h<-apply(otu_table(psoH3),2,mean)
+names(orig.ra.h)<-tax_table(psoH3)[,"KP"]
+
+adj.ra.h<-apply(otu_table(psaH3),2,mean)
+names(adj.ra.h)<-tax_table(psaH3)[,"KP"]
+adj.ra.l<-apply(otu_table(psaL3),2,mean)
+names(adj.ra.l)<-tax_table(psaL3)[,"KP"]
+
+ol<-data.frame(orig.ra.l)
+al<-data.frame(adj.ra.l)
+oh<-data.frame(orig.ra.h)
+ah<-data.frame(adj.ra.h)
+comparison.l<-merge(ol,al,all.x = T,all.y = T,by=0)
+colnames(comparison.l)[1]<-"KP"
+comparison.h<-merge(oh,ah,all.x = T,all.y = T,by=0)
+colnames(comparison.h)[1]<-"KP"
+comparison.l[is.na(comparison.l)]<-comparison.h[is.na(comparison.h)]<-0
+library(tidyr)
+#melts multiple columns to single column of values to plot with accompany column 'process' pulled from column names
+plotsideBars<-function(dat,cols){
+  gathered<-gather(dat,process,value, -KP)
+  #gathered$KP<-factor(gathered$KP,levels=unique(dat$KP))
+  gathered$KP<-factor(gathered$KP)
+  
+  ggplot(gathered, aes(x=KP, y=value)) +   
+    geom_bar(aes(fill = process), position = "dodge", stat="identity") +
+    theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +  scale_fill_manual(values=cols)
+  
+}
+
+p0<-plotsideBars(comparison,c("gray","black"))
+p0 + ggtitle("before v after SW correction")
+wilcox.test(comparison$orig.ra,comparison$adj.ra,paired = T)
+
+p1<-plotsideBars(comparison.l,c("gray","black"))
+p1 + ggtitle("LMA species only, before v after SW correction")
+wilcox.test(comparison.l$orig.ra,comparison.l$adj.ra,paired = T)
+
+p2<-plotsideBars(comparison.h,c("gray","black"))
+p2 +ggtitle("HMA species only, before v after SW correction")
+wilcox.test(comparison.h$orig.ra,comparison.h$adj.ra,paired = T)
+
+comparison.orig<-cbind.data.frame(orig.ra.l,orig.ra.h)
+comparison.orig$KP<-names(orig.ra.l)
+p3<-plotsideBars(comparison.orig,c(hma.col,lma.col))
+p3 +ggtitle("HMA v LMA, before SW correction")
+#wilcox.test(comparison.orig$orig.ra.l,comparison.orig$orig.ra.h,paired = T)
+
+comparison.adj<-cbind.data.frame(adj.ra.l,adj.ra.h)
+comparison.adj$KP<-names(adj.ra.l)
+p4<-plotsideBars(comparison.adj,c(hma.col,lma.col))
+p4 +ggtitle("HMA v LMA, after SW correction")
+#wilcox.test(comparison.adj$adj.ra.l,comparison.adj$adj.ra.h,paired = T)
+
+```
+

@@ -1,0 +1,451 @@
+---
+title: 'Biodiversity 16S: host phylogeny vs microbial diversity'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide")
+```
+
+
+```{r load, echo=FALSE, include=FALSE} 
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"02_tree_results/"
+dir.exists(file.path(mainDir, outDir))
+
+library(RColorBrewer) 
+library(colorspace)
+```
+
+
+```{r microbeTree,fig.height=10}
+library(dplyr)
+library(phyloseq)
+
+load("01_results/psR.rds")
+meta16<-data.frame(sample_data(psR)) %>% select(DNAid,voucher,Species_consensus,species)
+  
+load(paste0(outDir,"treeitems.Rds")) #loads, tr and colsC==Order colors --tree is filtered DOBsamples tree,no refs
+  keep<-sample_names(psR)[(sample_data(psR)$DNAid %in% tr$tip.label)]
+  psR<-prune_samples(keep,psR)
+
+
+
+load("01_results/ps4.rds") #loads ps4--filtered samples, not rarefied, for subsamples for each clade
+  keep<-sample_names(ps4)[(sample_data(ps4)$DNAid %in% tr$tip.label)]
+  ps4<-prune_samples(keep,ps4)
+
+load("01_results/psCLR.rds")
+  #prune samples to retain those represented in sponge tree
+  #sample_data(psCLR)$DNAid[!(sample_data(psCLR)$DNAid %in% tr$tip.label)]
+  keep<-sample_names(psCLR)[(sample_data(psCLR)$DNAid %in% tr$tip.label)]
+  psClR_match<-prune_samples(keep,psCLR)
+ 
+  
+#build distance matrix between samples using Aitchson
+load("01_results/DistACH.rds")
+
+hc<-hclust(DistACH)
+tmp<-sample_data(psR)[hc$labels,]
+#head(tmp$DNAid); head(hc$labels) #verify same order
+
+hc$labels<-tmp$DNAid
+tr16<-ape::as.phylo(hc); tr16$tip.label<-as.character(tr16$tip.label)
+#check match
+tr$tip.label<-as.character(tr$tip.label)
+tr<-ape::drop.tip(tr,tr$tip.label[!(tr$tip.label %in% tr16$tip.label)])
+tr$edge.length[tr$edge.length==0]<-0.0000000001
+
+dat<-data.frame(sample_data(psR))
+rownames(dat)<-dat$DNAid
+dat<-dat[which(dat$DNAid %in% tr16$tip.label),]
+unloadNamespace("phyloseq")
+
+#assign Order colors from previous tree plots. use phylo ordering to get colors sequential across tree
+#reusume testing here
+names(colsC)[!(names(colsC) %in% levels(dat$phyloOrder))] #should only be orders that aren't sampled for 16S
+levels(dat$phyloOrder)[!(levels(dat$phyloOrder) %in% names(colsC))] #shouldbe 0
+
+colsC<-colsC[(names(colsC) %in% levels(dat$phyloOrder))] 
+# manually force order for  factor phyloOrder to be same as color order
+dat$phyloOrder<-factor(dat$phyloOrder,levels=names(colsC))
+
+```
+
+#Figure1. sample tree overview
+```{r}
+library(ggtree)
+library(ggplot2)
+
+p<-ggtree(tr) %<+% dat + geom_tippoint(aes(color=phyloOrder)) + theme(legend.position="right") + scale_color_manual(values = colsC) 
+p + geom_text2(aes(subset=!isTip, label=node), size=2,hjust=.3) 
+#pdf("test.pdf",height=40) #verify color assignments
+rotate(p,node=1255) %>% rotate(1256) %>% rotate(1700)  + geom_tiplab(aes(label=Species_consensus),size=1) #+ geom_text2(aes(subset=!isTip, label=node), size=2,hjust=0) 
+#dev.off()
+rotate(p,node=1255) %>% rotate(1256) %>% rotate(1700) + labs(title="Sponge phylogeny")
+
+
+```
+
+
+
+
+# Microbiome distance tree
+Similarity between microbial communities calculated using Aitchison distance metric (Euclidean distance on CLR-transformed counts). Dendrogram constructed from hierarchical clustering.
+Tips are colored by host clade.
+
+```{r microbiome-dendro, fig.height=10}
+
+
+
+p<-ggtree(tr16) %<+% dat  + geom_tippoint(aes(color=phyloOrder)) + theme(legend.position="right") + scale_color_manual(values = colsC)
+
+#pdf("test.pdf",height=40) #verify color assignments
+#p + geom_tiplab(aes(label=Species_consensus),size=1) + labs(title="Microbiome distance (Aitchison)") 
+#dev.off()
+
+p + labs(title="Microbiome distance (Aitchison)") 
+
+unloadNamespace("microbiome");unloadNamespace("ggtree")
+#save colors from species tree to use in co-phylo plot
+colsCbytip<-c()
+for (i in 1:length(tr$tip.label)){
+    ti<-dat[dat$DNAid==tr$tip.label[i],]
+  colsCbytip<-c(colsCbytip,colsC[ which(names(colsC)==ti$phyloOrder)])
+  names(colsCbytip)[i]<-tr$tip.label[i]
+}
+
+```
+
+#Cophyloplot of host tree and microbiome distances
+
+```{r cophylo, fig.height=10}
+library(phytools)
+#creation of the association matrix for cophyloplot:
+association <- cbind(tr$tip.label, tr$tip.label)
+
+#co-phyloplot after rotating 16s nodes only
+ord<-setNames(1:length(tr$tip.label),tr$tip.label)
+tr16_ordered<-minRotate(tr16,ord)
+#cophyloplot(tr,tr16_ordered, assoc=association, space=1500,gap=4,show.tip.label = F,col=colsCbytip)
+
+#coplot after rotating tips on host tree to better match NEW 16s tip order
+ord16<-setNames(1:length(tr16_ordered$tip.label),tr16_ordered$tip.label)
+ord16<-ord16[names(ord16) %in% tr$tip.label]
+tr_ordered<-tipRotate(tr,ord16,rotate.multi=TRUE)
+#cophyloplot(tr_ordered, tr16_ordered, assoc=association,gap=2,show.tip.label = F,space=1500,cex=0.3,col=colsCbytip)
+#legend("topleft",names(cladelist),col=colsC,bty="n",pch=1)
+#text(200,-20,"Sponge")
+#text(3200,-20,"microbial composition")
+
+#final rotation of 16S based on re-arranged host tips
+ord<-setNames(1:length(tr_ordered$tip.label),tr_ordered$tip.label)
+tr16_ordered2<-minRotate(tr16_ordered,ord)
+cophyloplot(tr_ordered,tr16_ordered2, assoc=association, space=1500,gap=4,show.tip.label = F,col=colsCbytip)
+
+legend("topleft",names(colsC),col=colsC,bty="n",pch=15,cex=0.5)
+text(200,-20,"Sponge")
+text(3200,-20,"microbial composition")
+
+
+#alternative way
+
+# co <- tr16$tip.label[order(match(tr16$tip.label, tr$tip.label))]
+# newtr <- rotateConstr(tr16, co)
+# co2 <- tr16_ordered$tip.label[order(match(tr16_ordered$tip.label, tr$tip.label))]
+# newtr2 <- rotateConstr(tr16_ordered, co2)
+# 
+# association <- cbind(tr$tip.label, tr$tip.label)
+# 
+# #plot(newtr2)
+# cophyloplot(tr, newtr2, assoc = association, space=1500,gap=4,show.tip.label = F,col=colsCbytip)
+# title("faster way")
+
+
+
+#get RF score
+library(phangorn)
+tr16d<-drop.tip(tr16, tr16$tip.label[!(tr16$tip.label %in% tr$tip.label)])
+RF.dist(tr,tr16d)
+
+#normalize by dividing distance by number of internal branches = 2(n-3) for n-tip tree
+RF.dist(tr,tr16d,normalize = T)
+wRF.dist(tr,tr16d,normalize = TRUE)
+path.dist(tr,tr16d)
+#sprdist(tr,tr16d) too slow
+KF.dist(tr,tr16d)
+```
+
+Similarity in tree structure can be measured using Robinson-Foulds distance:
+
+RF: `r RF.dist(tr,tr16d)`
+
+RF, normalized from number of branches: `r RF.dist(tr,tr16d,normalize = T)`
+
+
+# Estimated phylogenetic signal of alpha-diversity
+Use Shannon to estimate microbial diversities on rarefied samples.
+
+```{r chao1_phylosignal}
+#zoom to each ORder; prune to phyloOrder; redo distances
+
+
+#test phylosignal:
+#estimate Pagels Lambda and Bloombergs K for alpha diversity
+ #examine effect of rarefaction
+#ps4 #15000 OTUS, very slow:
+#shannon<-vegan::diversity(otu_table(ps4))
+#chao1a<-vegan::estimateR(t(otu_table(ps4))) #abundance based
+#dimnames(chao1a)[[2]]<-sample_data(psR)$DNAid
+#chao1a_mat<-t(as.matrix(chao1a))
+#chao1a_mat<-chao1a_mat[tr$tip.label,"S.obs"]
+#phylosig(tr,chao1a_mat,method="lambda",test=T) #0.8
+#phylosig(tr,chao1a_mat,test=T) #0.000016
+library(phyloseq)
+shannon<-vegan::diversity(t(otu_table(psR)))
+names(shannon)<-sample_data(psR)$DNAid
+sdat<-shannon[match(tr$tip.label,names(shannon))]
+lamb<-phylosig(tr,sdat,method="lambda",test=T) #0.87
+#lamb$lamda; lamb$P
+bK<-phylosig(tr,sdat,test=T) #0.000019
+
+plot(tr,"fan",use.edge.length=T,show.tip.label=F)
+
+tiplabels(pch=16,col=colsCbytip,cex=sdat/5)
+
+```
+
+Pagel's Lamda estimate: `r lamb$lamda` p-value: `r lamb$P`
+
+Blomberg's K estimate: `r bK$K` p-value `r bK$P`
+
+
+# Toplogical similarity within clades of sponge tree
+Closer examination of host phylogenetic signal in microbiomes throughout sponge clades.
+```{r RFzooms_setup}
+
+#for each clade: homo, keratosa, verongiid, haplo, 
+
+#testing
+#samplelist<-keep
+#phyloseqCLR<-psCLR
+#phyloseqFiltCounts<-ps4
+
+sub_cophyloplot<-function(samplelist,phyloseqCLR,phyloseqFiltCounts){
+psCLRsub<-prune_samples(sample_names(phyloseqCLR) %in% samplelist, phyloseqCLR)
+#construct distance matrix
+DistACHz = distance(psCLRsub, method = "euclidean")
+
+hc<-hclust(DistACHz)
+tmp<-sample_data(psCLRsub)[hc$labels,]
+#head(tmp$DNAid); head(hc$labels)
+#plot(hc)
+hc$labels<-tmp$DNAid
+
+#capture order of sponge tree tips 
+is_tip <- tr$edge[,2] <= length(tr$tip.label)
+
+ordered_tips <- tr$edge[is_tip, 2]
+DNAid<-tr$tip.label[rev(ordered_tips)]
+phyloTipOrder<-1:length(DNAid)
+spongeTreeTipOrder<-as.data.frame(cbind(DNAid,phyloTipOrder),stringsAsFactors=F)
+
+#add tip order column to metadata
+dat<-data.frame(sample_data(psCLRsub)); rownames(dat)<-dat$DNAid
+dat<-dplyr::left_join(dat,data.frame(spongeTreeTipOrder),by="DNAid")
+dat$phyloOrder<-factor(dat$phyloOrder, levels=unique(dat$phyloOrder[order(dat$phyloTipOrder)]))
+tr16z<-ape::as.phylo(hc); tr16z$tip.label<-as.character(tr16z$tip.label)
+
+#prune sponge tree to include those tips
+#check match
+trZ<-drop.tip(tr,tr$tip.label[!(tr$tip.label %in% tr16z$tip.label)])
+trZ$edge.length[trZ$edge.length==0]<-0.0000000001
+#creation of the association matrix for cophyloplot:
+association <- cbind(trZ$tip.label, trZ$tip.label)
+
+#use colsCbytip to grab colors from big tree
+colstipsZ<-colsCbytip[trZ$tip.label]
+
+#co-phyloplot
+#rotate  microbe tree 
+ord<-setNames(1:length(trZ$tip.label),trZ$tip.label)
+tr16_ordered<-minRotate(tr16z,ord)
+
+#rotate host tree after microbe tree rotation
+ord2<-setNames(1:length(tr16_ordered$tip.label),tr16_ordered$tip.label)
+ord2<-ord2[names(ord2) %in% trZ$tip.label]
+trZ_ordered<-tipRotate(trZ,ord2,rotate.multi=TRUE)
+
+#cophyloplot(trZ_ordered, tr16_ordered, assoc=association, space=100,gap=2,show.tip.label = T,cex=0.3,col=colstipsZ)
+
+
+#final rotation of 16S based on re-arranged host tips
+ord<-setNames(1:length(trZ_ordered$tip.label),trZ_ordered$tip.label)
+tr16_ordered2<-minRotate(tr16_ordered,ord)
+cophyloplot(trZ_ordered,tr16_ordered2, assoc=association, space=1500,gap=4,show.tip.label = F,col=colstipsZ)
+
+cophyloplot(trZ_ordered,tr16_ordered2, assoc=association, space=1500,gap=4,show.tip.label = F,col=colstipsZ)
+legend("topleft",legend=levels(dat$phyloOrder),pch=1,col=unique(colstipsZ),bty="n")
+
+tr16d<-drop.tip(tr16z,tip=tr16z$tip.label[!(tr16z$tip.label %in% trZ$tip.label)])
+rf<-RF.dist(trZ,tr16d,normalize = T)
+
+pssub<-prune_samples(sample_names(phyloseqFiltCounts) %in% samplelist, phyloseqFiltCounts)
+psR<-rarefy_even_depth(pssub, sample.size = min(sample_sums(pssub)))
+#TODO replace with shannon!
+chao1aR<-vegan::estimateR(t(otu_table(psR))) #abundance based
+dimnames(chao1aR)[[2]]<-sample_data(psR)$DNAid
+chao1aR_mat<-t(as.matrix(chao1aR))
+chao1aR_S<-chao1aR_mat[,"S.obs"]
+pL<-phylosig(trZ,chao1aR_S,method="lambda",test=T) 
+bK<-phylosig(trZ,chao1aR_S,test=T) 
+legend("topright",legend=c(paste(c("Robinson-Foulds:"),round(rf,3)),paste(c("Blomberg's K:"),round(bK$K,3)),paste(c("Pagel's L:"),round(pL$lambda,3))),cex=0.5,bty="n")
+#legend("topright",legend=c(paste(c("Robinson-Foulds:"),round(rf,3)),paste(c("Pagel's L:"),round(pL$lambda,3))),cex=0.5,bty="n")
+
+#map host tree to 16s
+#drop samples not in hostTree
+tokeep<-sample_data(psR)$DNAid %in% trZ$tip.label
+psRkept<-prune_samples(sample_names(psR)[tokeep], psR)
+
+ord.nmds.bray <- ordinate(psRkept, method="NMDS", distance="bray",k=2)
+pMDS<-plot_ordination(psRkept, ord.nmds.bray, color="Species_consensus", title=paste0("NMDS on Bray distances for ", levels(sample_data(psRkept)$phylosubClass),": ", levels(sample_data(psRkept)$phyloOrder)))
+pMDS
+plot.new()
+mds.coords<-data.frame(ord.nmds.bray$points); rownames(mds.coords)<-sample_data(psRkept)$DNAid; nrow(mds.coords)
+nn<-setNames(colstipsZ,1:Ntip(trZ))
+
+phylomorphospace(trZ,mds.coords,ftype="off",xlab="nmds1",ylab="nmds2",node.size=c(0,1),fsize=0.1,control=list(col.node=nn),pch=19)
+return(list(trZ,mds.coords,colstipsZ))
+}
+
+makegif<-function(subset_ps,outfilename){
+  nn<-setNames(subset_ps[[3]],1:Ntip(subset_ps[[1]]))
+  
+  png(file="frame%02d.png",width=600,height=600,res=120)
+  par(mar=c(2.1,2.1,1.1,1.1))
+  project.phylomorphospace(subset_ps[[1]],subset_ps[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+  dev.off()
+  system("ffmpeg -i frame%02d.png -vf palettegen palette.png")
+  system(paste("ffmpeg -v warning -i plak%02d.png -i palette.png -lavfi \"paletteuse,setpts=6*PTS\" -y ", outfilename))
+  system("rm palette.png")
+  #system("ImageMagick convert -delay 10 -loop 2 *.png plakinid.gif")
+  #file.remove(list.files(pattern=".png"))
+}
+```
+
+```{r RFzoomPlak,fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+#for each clade: subset 16s datasets
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phylosubClass=="Homoscleromorpha"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+#makegif(subset,"plakinid.gif")
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsKer, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phylosubClass=="Keratosa"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+#makegif(subset,"Keratosa.gif")
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsVero, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phylosubClass=="Verongimorpha"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsC, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Haplosclerida_C"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsE, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Haplosclerida_E"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsD, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Haplosclerida_D"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsA, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Haplosclerida_A"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsB, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Haplosclerida_B"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsHap, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phylosubClass=="Haplosclerida"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsScop, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Scopalinida"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsClion, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Clionaida"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsPoec, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Poecilosclerida"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsAxin, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-c(sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Suberitida2"],sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Biemnida"],sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Axinellida"],sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Tetractinellida"],sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Bubarida"])
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r zoomsAge, fig.show='animate', ffmpeg.format='gif', dev='jpeg'}
+keep<-sample_names(psClR_match)[sample_data(psClR_match)$phyloOrder=="Agelasida"]
+subset<-sub_cophyloplot(keep,psClR_match,ps4)
+nn<-setNames(subset[[3]],1:Ntip(subset[[1]]))
+project.phylomorphospace(subset[[1]],subset[[2]],xlab="nmds1",ylab="nmds2",node.size=c(0,1),nsteps=10,fsize=0.1,sleep=0,ftype="off",control=list(col.node=nn),pch=19)
+```
+
+```{r save-objects}
+save(tr,colsC,file=paste0(outDir,"DOBspongeTree.Rdata"))
+#save(tr16,file="distTree16S.Rdata")
+```

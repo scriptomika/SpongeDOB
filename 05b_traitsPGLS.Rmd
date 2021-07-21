@@ -1,0 +1,236 @@
+---
+title: "TreeCharacters"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 4
+    df_print: paged
+author: "Sabrina Pankey"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning=FALSE, message=FALSE,results="hide",fig.width = 8,fig.height=12)
+```
+
+
+```{r load}
+mainDir<-"~/Box Sync/MPL/Lesser DOB sponges/coevolution_analyses/pipeline4/"
+setwd(mainDir)
+outDir<-"05_calib_results/"
+dir.exists(file.path(mainDir, outDir))
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(phytools)
+library(strap)
+library(diversitree)
+library(viridis)
+vp<-viridis_pal(option="D")(100)
+hma.col<-vp[20]; lma.col<-vp[80]
+library(colorspace)
+hma.col<-rainbow_hcl(12)[2]; lma.col<-rainbow_hcl(12)[7]
+library(dplyr)
+```
+
+```{r plotTipTraits}
+load("02_tree_results/spongespeciesTimeTree.OGless.Rds") #loads 'timetr', treemeta.u, cladelist&cladecols (==phylo clade colors),colsO & colsF (==WPD taxonomy colors)
+ctr<-timetr
+
+defdat<-read.csv("02_input_spongetree/chars_by_species.csv")
+
+load("03_char_results/species_charsRF.Rds") #loads 'char' with consensusRF column containing Random-Forest microbe state predictions
+
+char<-dplyr::left_join(char,defdat,by=c("Species_consensus"))
+
+
+#select which RF prediction to use (based on ASVs, phylum or class)
+char<- char %>% dplyr::filter(!is.na(consensusRF_class))
+
+consensusRF<-char$consensusRF_class
+
+
+#binarize
+char01<-consensusRF;names(char01)<-char$Species_consensus
+char01[char01=="HMA"]<-1; char01[char01=="LMA"]<-0; 
+char01<-setNames(as.numeric(char01), names(char01))
+
+char01<-char01[names(char01) %in% ctr$tip.label]
+char01<-char01[ctr$tip.label]
+
+
+#retain only species with nonNA characters ...Diversitree MLE performs poorly
+todrop<-names(char01)[is.na(char01)]
+char01.complete<-char01[!(is.na(char01))]
+
+tokeep<-ctr$tip.label[(ctr$tip.label %in% names(char01.complete))]
+ctr.complete<-keep.tip(ctr,tip=tokeep)
+
+#drop any char entries not in tree
+char01.complete<-char01.complete[names(char01.complete) %in% ctr.complete$tip.label]
+length(char01.complete)==length(ctr.complete$tip.label)
+char01.complete<-char01.complete[ctr.complete$tip.label]
+
+
+
+
+
+
+
+
+
+tp<-plot(ctr.complete,cex=0.3,no.margin=F,main="Calibrated tree with states")
+axisPhylo()
+tiplabels(tip=which(ctr.complete$tip.label %in%   names(char01.complete)[char01.complete==0]),col=lma.col,pch=16,cex=1,frame="none")
+tiplabels(tip=which(ctr.complete$tip.label %in% names(char01.complete)[char01.complete==1]),col=hma.col,pch=16,cex=1,frame="none")
+
+dn<-dist.nodes(ctr.complete)
+ctr.complete$root.time<-max(dn)/2
+library(strap)
+#pdf(paste0(outDir,"geoscale_ctrcomplete.pdf"),height=11)
+geoscalePhylo(tree=ctr.complete, units=c("Period"), boxes="Period")
+#dev.off()
+
+
+p <- ggtree(ctr.complete,right=T) + geom_tiplab(size=2) #+ xlim(0, 1000)
+
+p1 <-p %<+% char + geom_tiplab(size=2 ,aes(colour=consensusRF_class)) + xlim_tree(1000) + scale_color_manual(values=c(lma.col,hma.col))
+p2 <- p   %<+% char + geom_point(aes(x, y, colour=consensusRF_class))  + xlim_tree(1000) + scale_color_manual(values=c(lma.col,hma.col))
+
+#p3 <- facet_plot(p, panel = "Palatability", data = char, geom = geom_point, mapping = aes(x = LohmeanPellets,color=consensusRF_class))
+
+p4<-facet_plot(p, panel="Palatability", data=char, geom=geom_pointrange, mapping=aes(x=LohmeanPellets,xmin=LohmeanPellets-Lohsdpellets, xmax=LohmeanPellets+Lohsdpellets,color=consensusRF_class)) + scale_color_manual(values=c(lma.col,hma.col))
+
+p4 + xlim_tree(1000) + xlim_expand(c(0, 10), 'Palatability')
+
+
+```
+
+##PGLS
+```{r pgls}
+library(nlme)
+dat4pgls<-char %>% dplyr::select(Species_consensus,consensusRF_class,LohmeanPellets,Lohsdpellets) %>% dplyr::filter(!is.na(LohmeanPellets)) %>% dplyr::filter(Species_consensus %in% ctr.complete$tip.label)
+
+
+##PGLS defended(discrete) ~ type
+#define underdefended as >2 pellets eaten
+#dat4pgls<-dat4pgls %>% dplyr::mutate(undefended=ifelse(LohmeanPellets>2,"u","d"))
+
+
+dat4pgls<-dat4pgls %>% dplyr::mutate(undefended3=ifelse((LohmeanPellets-Lohsdpellets)>6,"u",ifelse((LohmeanPellets+Lohsdpellets)<6,"d","v")))
+dat4pgls$undefended3<-factor(dat4pgls$undefended3,levels=c("d","v","u"))
+
+dat4pgls<-dat4pgls %>% dplyr::mutate(undefended=ifelse(undefended3=="d","d","u"))
+
+
+tree<-keep.tip(ctr.complete,tip=ctr.complete$tip.label[ctr.complete$tip.label %in% dat4pgls$Species_consensus])
+
+tree$tip.label %in% dat4pgls$Species_consensus
+dat4pgls$Species_consensus %in% tree$tip.label 
+rownames(dat4pgls)<-dat4pgls$Species_consensus
+
+#tree with palatability mapped, only include species with both data
+p <- ggtree(tree,right=T) + geom_tiplab(size=2) #+ xlim(0, 1000)
+
+p4<-facet_plot(p, panel="Palatability", data=char, geom=geom_pointrange, mapping=aes(x=LohmeanPellets,xmin=LohmeanPellets-Lohsdpellets, xmax=LohmeanPellets+Lohsdpellets,color=consensusRF_class))+ scale_color_manual(values=c(hma.col,lma.col))
+
+p4 + xlim_tree(1500) + xlim_expand(c(0, 10), 'Palatability')
+p5<-facet_plot(p, panel="Palatability", data=dat4pgls, geom=geom_point, mapping=aes(x=LohmeanPellets,color=undefended3))+ scale_color_manual(values=c("gray20","gray60","gray80"))
+
+p5 + xlim_tree(1500) + xlim_expand(c(0, 10), 'Palatability')
+
+pdf(paste0(outDir,"speciestree_traits.pdf"),height=11, width=8, useDingbats = F)
+p4 + xlim_tree(1500) + xlim_expand(c(0, 10), 'Palatability')
+p5 + xlim_tree(1500) + xlim_expand(c(0, 10), 'Palatability')
+
+#cowplot::plot_grid(p2,p4,rel_widths = c(1.5,1))
+dev.off()
+
+##PGLS mean ~ type
+gls_BM<-gls(LohmeanPellets~consensusRF_class, data=dat4pgls, correlation=corBrownian(1,tree))
+cat("PGLS for relationship between pallativeness and HMA/LMA state using Brownian Motion")
+summary(gls_BM)
+
+gls_PagelL<-gls(LohmeanPellets~consensusRF_class, data=dat4pgls,correlation=corPagel(1,tree))
+cat("PGLS for relationship between pallativeness and HMA/LMA state using Pagel's lambda")
+
+lrtest<-function(model1,model2){
+  lik1<-logLik(model1)
+  lik2<-logLik(model2)
+  LR<--2*(lik1-lik2)
+  degf<-attr(lik2,"df")-attr(lik1,"df")
+  P<-pchisq(LR,df=degf,lower.tail=FALSE)
+  cat(paste("Likelihood ratio = ",
+            signif(LR,5),"(df=",degf,") P = ",
+            signif(P,4),"\n",sep=""))
+  invisible(list(likelihood.ratio=LR,p=P))
+}
+
+## run likelihood-ratio test
+cat("LRT to compare Brownian to Pagel's")
+lrtest(gls_BM,gls_PagelL)
+
+#Pagels fit sig better, with extra parameter
+summary(gls_PagelL)
+glspagelp<-summary(gls_PagelL)$tTable[2,"p-value"] #not signif assoc btween traits
+
+cat("Phylogenetic signal in pallativeness (Blomberg's K):")
+phylosig(tree,dat4pgls$LohmeanPellets,method="K",test=T)
+cat("Phylogenetic signal in pallativeness (Pagel's lamda):")
+phylosig(tree,dat4pgls$LohmeanPellets,method="lambda",test=T)
+#no phylosignal of palatibility
+
+
+
+defense<-dat4pgls$undefended
+type<-dat4pgls$consensusRF_class; names(defense)<-names(type)<-rownames(dat4pgls)
+
+pag<-phytools::fitPagel(tree=tree,x=defense,y=type)
+
+
+
+```
+
+PGLS did not find a significant assoication between sponge pellets eaten and HMA/LMA status (p= `r glspagelp`), but applying a cut-off of 20% pellets eaten, Pagel's (1994) method finds support for model of correlated evolution between HMA and reduced pallatability. (LRT=`r pag$lik.ratio`, p= `r pag$P`).
+```{r marc, results="asis"}
+library(ggplot2)
+type <- c(rep("HMA" , 4) , rep("LMA" , 4))
+result <- rep(c("defended" , "undefended") , 4)
+predator<-rep(c(rep("Thalassoma bifasciatum" , 2) , rep("Paguristes puncticeps" , 2) ),2)
+numspec <- c(27,5,10,1,29,11,6,3)
+data <- data.frame(type,result,predator,numspec); data$result<-factor(data$result,levels=c("undefended","defended"))
+
+dat2<-data %>% dplyr::group_by(type,result)  %>% dplyr::summarise(tot=sum(numspec))
+chisq.test(dat2$tot)
+# Grouped
+ggplot(data, aes(fill=result, y=numspec, x=type)) + 
+  geom_bar(position="stack", stat="identity") +facet_wrap(~predator) + theme_minimal() + scale_fill_grey()
+
+pdf(paste0(outDir,"chem_chi.pdf"))
+##use data from Loh above:
+d3<-dat4pgls %>% group_by(consensusRF_class,undefended) %>% summarise(tot=n())
+chi<-chisq.test(d3$tot)
+cat("Chisq on D vs V/U:"); chi
+
+d3<-dat4pgls %>% group_by(consensusRF_class,undefended3) %>% summarise(tot=n())
+chi1<-chisq.test(d3$tot)
+cat("Chisq on D, V, and U:"); chi1
+
+chi2<-chisq.test(d3$tot[d3$undefended3!="v"])
+cat("Chisq on D vs U only:"); chi2
+
+d3$undefended3<-factor(d3$undefended3,levels=c("d","v","u"))
+
+# Grouped
+ggplot(d3, aes(fill=undefended3, y=tot, x=consensusRF_class)) + 
+  geom_bar(position="stack", stat="identity") + theme_minimal() + scale_fill_grey()
+dev.off()
+```
+
+
+
+Number of tree tips with Chem AND HMA/LMA trait data: `r nrow(dat4pgls)`
